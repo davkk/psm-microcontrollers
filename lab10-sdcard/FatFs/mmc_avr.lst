@@ -1,0 +1,2561 @@
+   1               		.file	"mmc_avr.c"
+   2               	__SP_H__ = 0x3e
+   3               	__SP_L__ = 0x3d
+   4               	__SREG__ = 0x3f
+   5               	__tmp_reg__ = 0
+   6               	__zero_reg__ = 1
+   7               		.text
+   8               	.Ltext0:
+   9               		.cfi_sections	.debug_frame
+  11               	power_off:
+  12               	.LFB1:
+  13               		.file 1 "FatFs/mmc_avr.c"
+   1:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+   2:FatFs/mmc_avr.c **** /* MMCv3/SDv1/SDv2 (in SPI mode) control module                          */
+   3:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+   4:FatFs/mmc_avr.c **** /*
+   5:FatFs/mmc_avr.c **** /  Copyright (C) 2014, ChaN, all right reserved.
+   6:FatFs/mmc_avr.c **** /
+   7:FatFs/mmc_avr.c **** / * This software is a free software and there is NO WARRANTY.
+   8:FatFs/mmc_avr.c **** / * No restriction on use. You can use, modify and redistribute it for
+   9:FatFs/mmc_avr.c **** /   personal, non-profit or commercial products UNDER YOUR RESPONSIBILITY.
+  10:FatFs/mmc_avr.c **** / * Redistributions of source code must retain the above copyright notice.
+  11:FatFs/mmc_avr.c **** /
+  12:FatFs/mmc_avr.c **** /-------------------------------------------------------------------------*/
+  13:FatFs/mmc_avr.c **** 
+  14:FatFs/mmc_avr.c **** #include <avr/io.h>
+  15:FatFs/mmc_avr.c **** #include <avr/interrupt.h>
+  16:FatFs/mmc_avr.c **** #include "diskio.h"
+  17:FatFs/mmc_avr.c **** 
+  18:FatFs/mmc_avr.c **** 
+  19:FatFs/mmc_avr.c **** //ATmega32 Hardware SPI
+  20:FatFs/mmc_avr.c **** #define SS PB4
+  21:FatFs/mmc_avr.c **** #define MOSI PB5
+  22:FatFs/mmc_avr.c **** #define MISO PB6
+  23:FatFs/mmc_avr.c **** #define SCK PB7
+  24:FatFs/mmc_avr.c **** 
+  25:FatFs/mmc_avr.c **** 
+  26:FatFs/mmc_avr.c **** /* Port controls  (Platform dependent) */
+  27:FatFs/mmc_avr.c **** #define CS_LOW()	PORTB&=~(1<<SS)			/* CS=low */
+  28:FatFs/mmc_avr.c **** #define	CS_HIGH()	PORTB|=(1<<SS);			/* CS=high */
+  29:FatFs/mmc_avr.c **** #define MMC_CD		1 
+  30:FatFs/mmc_avr.c **** //(!(PINB & 0x10))	/* Card detected.   yes:true, no:false, default:true */
+  31:FatFs/mmc_avr.c **** #define MMC_WP		0
+  32:FatFs/mmc_avr.c **** //(PINB & 0x20)		/* Write protected. yes:true, no:false, default:false */
+  33:FatFs/mmc_avr.c **** #define	FCLK_SLOW()	SPCR = 0x52		/* Set slow clock (F_CPU / 64) */
+  34:FatFs/mmc_avr.c **** #define	FCLK_FAST()	SPCR = 0x50		/* Set fast clock (F_CPU / 2) */
+  35:FatFs/mmc_avr.c **** 
+  36:FatFs/mmc_avr.c **** 
+  37:FatFs/mmc_avr.c **** /*--------------------------------------------------------------------------
+  38:FatFs/mmc_avr.c **** 
+  39:FatFs/mmc_avr.c ****    Module Private Functions
+  40:FatFs/mmc_avr.c **** 
+  41:FatFs/mmc_avr.c **** ---------------------------------------------------------------------------*/
+  42:FatFs/mmc_avr.c **** 
+  43:FatFs/mmc_avr.c **** /* Definitions for MMC/SDC command */
+  44:FatFs/mmc_avr.c **** #define CMD0	(0)			/* GO_IDLE_STATE */
+  45:FatFs/mmc_avr.c **** #define CMD1	(1)			/* SEND_OP_COND (MMC) */
+  46:FatFs/mmc_avr.c **** #define	ACMD41	(0x80+41)	/* SEND_OP_COND (SDC) */
+  47:FatFs/mmc_avr.c **** #define CMD8	(8)			/* SEND_IF_COND */
+  48:FatFs/mmc_avr.c **** #define CMD9	(9)			/* SEND_CSD */
+  49:FatFs/mmc_avr.c **** #define CMD10	(10)		/* SEND_CID */
+  50:FatFs/mmc_avr.c **** #define CMD12	(12)		/* STOP_TRANSMISSION */
+  51:FatFs/mmc_avr.c **** #define ACMD13	(0x80+13)	/* SD_STATUS (SDC) */
+  52:FatFs/mmc_avr.c **** #define CMD16	(16)		/* SET_BLOCKLEN */
+  53:FatFs/mmc_avr.c **** #define CMD17	(17)		/* READ_SINGLE_BLOCK */
+  54:FatFs/mmc_avr.c **** #define CMD18	(18)		/* READ_MULTIPLE_BLOCK */
+  55:FatFs/mmc_avr.c **** #define CMD23	(23)		/* SET_BLOCK_COUNT (MMC) */
+  56:FatFs/mmc_avr.c **** #define	ACMD23	(0x80+23)	/* SET_WR_BLK_ERASE_COUNT (SDC) */
+  57:FatFs/mmc_avr.c **** #define CMD24	(24)		/* WRITE_BLOCK */
+  58:FatFs/mmc_avr.c **** #define CMD25	(25)		/* WRITE_MULTIPLE_BLOCK */
+  59:FatFs/mmc_avr.c **** #define CMD32	(32)		/* ERASE_ER_BLK_START */
+  60:FatFs/mmc_avr.c **** #define CMD33	(33)		/* ERASE_ER_BLK_END */
+  61:FatFs/mmc_avr.c **** #define CMD38	(38)		/* ERASE */
+  62:FatFs/mmc_avr.c **** #define CMD55	(55)		/* APP_CMD */
+  63:FatFs/mmc_avr.c **** #define CMD58	(58)		/* READ_OCR */
+  64:FatFs/mmc_avr.c **** 
+  65:FatFs/mmc_avr.c **** 
+  66:FatFs/mmc_avr.c **** static volatile
+  67:FatFs/mmc_avr.c **** DSTATUS Stat = STA_NOINIT;	/* Disk status */
+  68:FatFs/mmc_avr.c **** 
+  69:FatFs/mmc_avr.c **** static volatile
+  70:FatFs/mmc_avr.c **** BYTE Timer1, Timer2;	/* 100Hz decrement timer */
+  71:FatFs/mmc_avr.c **** 
+  72:FatFs/mmc_avr.c **** static
+  73:FatFs/mmc_avr.c **** BYTE CardType;			/* Card type flags */
+  74:FatFs/mmc_avr.c **** 
+  75:FatFs/mmc_avr.c **** 
+  76:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+  77:FatFs/mmc_avr.c **** /* Power Control  (Platform dependent)                                   */
+  78:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+  79:FatFs/mmc_avr.c **** /* When the target system does not support socket power control, there   */
+  80:FatFs/mmc_avr.c **** /* is nothing to do in these functions and chk_power always returns 1.   */
+  81:FatFs/mmc_avr.c **** 
+  82:FatFs/mmc_avr.c **** static
+  83:FatFs/mmc_avr.c **** void power_on (void)
+  84:FatFs/mmc_avr.c **** {
+  85:FatFs/mmc_avr.c ****   DDRB|=(1<<SS)|(1<<MOSI)|(1<<SCK);
+  86:FatFs/mmc_avr.c ****   PORTB|=(1<<SS);
+  87:FatFs/mmc_avr.c ****   DDRB&=~(MISO);	
+  88:FatFs/mmc_avr.c ****   SPCR=(1<<SPE)|(1<<MSTR)|(1<<SPR0);
+  89:FatFs/mmc_avr.c ****   
+  90:FatFs/mmc_avr.c **** 	/* Start 100Hz system timer (TC2.OC) */
+  91:FatFs/mmc_avr.c **** 	OCR2 = F_CPU / 1024 / 100 - 1;
+  92:FatFs/mmc_avr.c **** 	
+  93:FatFs/mmc_avr.c **** 	TCCR2 = (1<<WGM21)|(1<<CS22)|(1<<CS21)|(1<<CS20);
+  94:FatFs/mmc_avr.c **** 	TIMSK |= (1<<OCIE2);
+  95:FatFs/mmc_avr.c **** 
+  96:FatFs/mmc_avr.c **** 	sei();
+  97:FatFs/mmc_avr.c ****   
+  98:FatFs/mmc_avr.c **** }
+  99:FatFs/mmc_avr.c **** 
+ 100:FatFs/mmc_avr.c **** static
+ 101:FatFs/mmc_avr.c **** void power_off (void)
+ 102:FatFs/mmc_avr.c **** {
+  14               		.loc 1 102 0
+  15               		.cfi_startproc
+  16               	/* prologue: function */
+  17               	/* frame size = 0 */
+  18               	/* stack size = 0 */
+  19               	.L__stack_usage = 0
+ 103:FatFs/mmc_avr.c **** 	SPCR = 0;
+  20               		.loc 1 103 0
+  21 0000 1DB8      		out 0xd,__zero_reg__
+ 104:FatFs/mmc_avr.c **** 	DDRB &=~((1<<SS)|(1<<MOSI)|(1<<SCK));
+  22               		.loc 1 104 0
+  23 0002 87B3      		in r24,0x17
+  24 0004 8F74      		andi r24,lo8(79)
+  25 0006 87BB      		out 0x17,r24
+ 105:FatFs/mmc_avr.c **** 	PORTB&=~(1<<SS);
+  26               		.loc 1 105 0
+  27 0008 C498      		cbi 0x18,4
+  28 000a 0895      		ret
+  29               		.cfi_endproc
+  30               	.LFE1:
+  33               	xchg_spi:
+  34               	.LFB2:
+ 106:FatFs/mmc_avr.c **** 	
+ 107:FatFs/mmc_avr.c **** }
+ 108:FatFs/mmc_avr.c **** 
+ 109:FatFs/mmc_avr.c **** 
+ 110:FatFs/mmc_avr.c **** 
+ 111:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 112:FatFs/mmc_avr.c **** /* Transmit/Receive data from/to MMC via SPI  (Platform dependent)       */
+ 113:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 114:FatFs/mmc_avr.c **** 
+ 115:FatFs/mmc_avr.c **** /* Exchange a byte */
+ 116:FatFs/mmc_avr.c **** static
+ 117:FatFs/mmc_avr.c **** BYTE xchg_spi (		/* Returns received data */
+ 118:FatFs/mmc_avr.c **** 	BYTE dat		/* Data to be sent */
+ 119:FatFs/mmc_avr.c **** )
+ 120:FatFs/mmc_avr.c **** {
+  35               		.loc 1 120 0
+  36               		.cfi_startproc
+  37               	.LVL0:
+  38               	/* prologue: function */
+  39               	/* frame size = 0 */
+  40               	/* stack size = 0 */
+  41               	.L__stack_usage = 0
+ 121:FatFs/mmc_avr.c **** 	SPDR = dat;
+  42               		.loc 1 121 0
+  43 000c 8FB9      		out 0xf,r24
+  44               	.L3:
+ 122:FatFs/mmc_avr.c **** 	 while(! (SPSR & (1<<SPIF))); //SPIF=1 transmisja zakonczona
+  45               		.loc 1 122 0 discriminator 1
+  46 000e 779B      		sbis 0xe,7
+  47 0010 00C0      		rjmp .L3
+ 123:FatFs/mmc_avr.c **** 	return SPDR;
+  48               		.loc 1 123 0
+  49 0012 8FB1      		in r24,0xf
+  50               	.LVL1:
+ 124:FatFs/mmc_avr.c **** }
+  51               		.loc 1 124 0
+  52 0014 0895      		ret
+  53               		.cfi_endproc
+  54               	.LFE2:
+  57               	deselect:
+  58               	.LFB6:
+ 125:FatFs/mmc_avr.c **** 
+ 126:FatFs/mmc_avr.c **** /* Send a data block fast */
+ 127:FatFs/mmc_avr.c **** static
+ 128:FatFs/mmc_avr.c **** void xmit_spi_multi (
+ 129:FatFs/mmc_avr.c **** 	const BYTE *p,	/* Data block to be sent */
+ 130:FatFs/mmc_avr.c **** 	UINT cnt		/* Size of data block (must be multiple of 2) */
+ 131:FatFs/mmc_avr.c **** )
+ 132:FatFs/mmc_avr.c **** {
+ 133:FatFs/mmc_avr.c **** 	do {
+ 134:FatFs/mmc_avr.c **** 		SPDR = *p++;  while(! (SPSR & (1<<SPIF)));
+ 135:FatFs/mmc_avr.c **** 		SPDR = *p++;  while(! (SPSR & (1<<SPIF)));
+ 136:FatFs/mmc_avr.c **** 	} while (cnt -= 2);
+ 137:FatFs/mmc_avr.c **** }
+ 138:FatFs/mmc_avr.c **** 
+ 139:FatFs/mmc_avr.c **** /* Receive a data block fast */
+ 140:FatFs/mmc_avr.c **** static
+ 141:FatFs/mmc_avr.c **** void rcvr_spi_multi (
+ 142:FatFs/mmc_avr.c **** 	BYTE *p,	/* Data buffer */
+ 143:FatFs/mmc_avr.c **** 	UINT cnt	/* Size of data block (must be multiple of 2) */
+ 144:FatFs/mmc_avr.c **** )
+ 145:FatFs/mmc_avr.c **** {
+ 146:FatFs/mmc_avr.c **** 	do {
+ 147:FatFs/mmc_avr.c **** 		SPDR = 0xFF;  while(! (SPSR & (1<<SPIF))); *p++ = SPDR;
+ 148:FatFs/mmc_avr.c **** 		SPDR = 0xFF;  while(! (SPSR & (1<<SPIF))); *p++ = SPDR;
+ 149:FatFs/mmc_avr.c **** 	} while (cnt -= 2);
+ 150:FatFs/mmc_avr.c **** }
+ 151:FatFs/mmc_avr.c **** 
+ 152:FatFs/mmc_avr.c **** 
+ 153:FatFs/mmc_avr.c **** 
+ 154:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 155:FatFs/mmc_avr.c **** /* Wait for card ready                                                   */
+ 156:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 157:FatFs/mmc_avr.c **** 
+ 158:FatFs/mmc_avr.c **** static
+ 159:FatFs/mmc_avr.c **** int wait_ready (	/* 1:Ready, 0:Timeout */
+ 160:FatFs/mmc_avr.c **** 	UINT wt			/* Timeout [ms] */
+ 161:FatFs/mmc_avr.c **** )
+ 162:FatFs/mmc_avr.c **** {
+ 163:FatFs/mmc_avr.c **** 	BYTE d;
+ 164:FatFs/mmc_avr.c **** 
+ 165:FatFs/mmc_avr.c **** 
+ 166:FatFs/mmc_avr.c **** 	Timer2 = wt / 10;
+ 167:FatFs/mmc_avr.c **** 	do
+ 168:FatFs/mmc_avr.c **** 		d = xchg_spi(0xFF);
+ 169:FatFs/mmc_avr.c **** 	while (d != 0xFF && Timer2);
+ 170:FatFs/mmc_avr.c **** 
+ 171:FatFs/mmc_avr.c **** 	return (d == 0xFF) ? 1 : 0;
+ 172:FatFs/mmc_avr.c **** }
+ 173:FatFs/mmc_avr.c **** 
+ 174:FatFs/mmc_avr.c **** 
+ 175:FatFs/mmc_avr.c **** 
+ 176:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 177:FatFs/mmc_avr.c **** /* Deselect the card and release SPI bus                                 */
+ 178:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 179:FatFs/mmc_avr.c **** 
+ 180:FatFs/mmc_avr.c **** static
+ 181:FatFs/mmc_avr.c **** void deselect (void)
+ 182:FatFs/mmc_avr.c **** {
+  59               		.loc 1 182 0
+  60               		.cfi_startproc
+  61               	/* prologue: function */
+  62               	/* frame size = 0 */
+  63               	/* stack size = 0 */
+  64               	.L__stack_usage = 0
+ 183:FatFs/mmc_avr.c **** 	CS_HIGH();		/* Set CS# high */
+  65               		.loc 1 183 0
+  66 0016 C49A      		sbi 0x18,4
+ 184:FatFs/mmc_avr.c **** 	xchg_spi(0xFF);	/* Dummy clock (force DO hi-z for multiple slave SPI) */
+  67               		.loc 1 184 0
+  68 0018 8FEF      		ldi r24,lo8(-1)
+  69 001a 0C94 0000 		jmp xchg_spi
+  70               	.LVL2:
+  71               		.cfi_endproc
+  72               	.LFE6:
+  75               	rcvr_datablock:
+  76               	.LFB8:
+ 185:FatFs/mmc_avr.c **** }
+ 186:FatFs/mmc_avr.c **** 
+ 187:FatFs/mmc_avr.c **** 
+ 188:FatFs/mmc_avr.c **** 
+ 189:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 190:FatFs/mmc_avr.c **** /* Select the card and wait for ready                                    */
+ 191:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 192:FatFs/mmc_avr.c **** 
+ 193:FatFs/mmc_avr.c **** static
+ 194:FatFs/mmc_avr.c **** int select (void)	/* 1:Successful, 0:Timeout */
+ 195:FatFs/mmc_avr.c **** {
+ 196:FatFs/mmc_avr.c **** 	CS_LOW();		/* Set CS# low */
+ 197:FatFs/mmc_avr.c **** 	xchg_spi(0xFF);	/* Dummy clock (force DO enabled) */
+ 198:FatFs/mmc_avr.c **** 	if (wait_ready(500)) return 1;	/* Wait for card ready */
+ 199:FatFs/mmc_avr.c **** 
+ 200:FatFs/mmc_avr.c **** 	deselect();
+ 201:FatFs/mmc_avr.c **** 	return 0;	/* Timeout */
+ 202:FatFs/mmc_avr.c **** }
+ 203:FatFs/mmc_avr.c **** 
+ 204:FatFs/mmc_avr.c **** 
+ 205:FatFs/mmc_avr.c **** 
+ 206:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 207:FatFs/mmc_avr.c **** /* Receive a data packet from MMC                                        */
+ 208:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 209:FatFs/mmc_avr.c **** 
+ 210:FatFs/mmc_avr.c **** static
+ 211:FatFs/mmc_avr.c **** int rcvr_datablock (
+ 212:FatFs/mmc_avr.c **** 	BYTE *buff,			/* Data buffer to store received data */
+ 213:FatFs/mmc_avr.c **** 	UINT btr			/* Byte count (must be multiple of 4) */
+ 214:FatFs/mmc_avr.c **** )
+ 215:FatFs/mmc_avr.c **** {
+  77               		.loc 1 215 0
+  78               		.cfi_startproc
+  79               	.LVL3:
+  80 001e 0F93      		push r16
+  81               	.LCFI0:
+  82               		.cfi_def_cfa_offset 3
+  83               		.cfi_offset 16, -2
+  84 0020 1F93      		push r17
+  85               	.LCFI1:
+  86               		.cfi_def_cfa_offset 4
+  87               		.cfi_offset 17, -3
+  88 0022 CF93      		push r28
+  89               	.LCFI2:
+  90               		.cfi_def_cfa_offset 5
+  91               		.cfi_offset 28, -4
+  92 0024 DF93      		push r29
+  93               	.LCFI3:
+  94               		.cfi_def_cfa_offset 6
+  95               		.cfi_offset 29, -5
+  96               	/* prologue: function */
+  97               	/* frame size = 0 */
+  98               	/* stack size = 4 */
+  99               	.L__stack_usage = 4
+ 100 0026 8C01      		movw r16,r24
+ 101 0028 EB01      		movw r28,r22
+ 216:FatFs/mmc_avr.c **** 	BYTE token;
+ 217:FatFs/mmc_avr.c **** 
+ 218:FatFs/mmc_avr.c **** 
+ 219:FatFs/mmc_avr.c **** 	Timer1 = 20;
+ 102               		.loc 1 219 0
+ 103 002a 84E1      		ldi r24,lo8(20)
+ 104               	.LVL4:
+ 105 002c 8093 0000 		sts Timer1,r24
+ 106               	.LVL5:
+ 107               	.L9:
+ 220:FatFs/mmc_avr.c **** 	do {							/* Wait for data packet in timeout of 200ms */
+ 221:FatFs/mmc_avr.c **** 		token = xchg_spi(0xFF);
+ 108               		.loc 1 221 0 discriminator 2
+ 109 0030 8FEF      		ldi r24,lo8(-1)
+ 110 0032 0E94 0000 		call xchg_spi
+ 111               	.LVL6:
+ 222:FatFs/mmc_avr.c **** 	} while ((token == 0xFF) && Timer1);
+ 112               		.loc 1 222 0 discriminator 2
+ 113 0036 8F3F      		cpi r24,lo8(-1)
+ 114 0038 01F4      		brne .L8
+ 115               		.loc 1 222 0 is_stmt 0 discriminator 1
+ 116 003a 8091 0000 		lds r24,Timer1
+ 117               	.LVL7:
+ 118 003e 8111      		cpse r24,__zero_reg__
+ 119 0040 00C0      		rjmp .L9
+ 120 0042 00C0      		rjmp .L14
+ 121               	.LVL8:
+ 122               	.L8:
+ 223:FatFs/mmc_avr.c **** 	if (token != 0xFE) return 0;	/* If not valid data token, retutn with error */
+ 123               		.loc 1 223 0 is_stmt 1
+ 124 0044 8E3F      		cpi r24,lo8(-2)
+ 125 0046 01F4      		brne .L14
+ 126 0048 F801      		movw r30,r16
+ 127               	.LBB6:
+ 128               	.LBB7:
+ 129               	.LBB8:
+ 130               	.LBB9:
+ 147:FatFs/mmc_avr.c **** 		SPDR = 0xFF;  while(! (SPSR & (1<<SPIF))); *p++ = SPDR;
+ 131               		.loc 1 147 0
+ 132 004a 8FEF      		ldi r24,lo8(-1)
+ 133               	.LVL9:
+ 134               	.L13:
+ 135 004c 8FB9      		out 0xf,r24
+ 136               	.L11:
+ 137 004e 779B      		sbis 0xe,7
+ 138 0050 00C0      		rjmp .L11
+ 139               	.LVL10:
+ 140 0052 9FB1      		in r25,0xf
+ 141 0054 9083      		st Z,r25
+ 148:FatFs/mmc_avr.c **** 	} while (cnt -= 2);
+ 142               		.loc 1 148 0
+ 143 0056 8FB9      		out 0xf,r24
+ 144               	.L12:
+ 145 0058 779B      		sbis 0xe,7
+ 146 005a 00C0      		rjmp .L12
+ 147               	.LVL11:
+ 148 005c 9FB1      		in r25,0xf
+ 149 005e 9183      		std Z+1,r25
+ 149:FatFs/mmc_avr.c **** }
+ 150               		.loc 1 149 0
+ 151 0060 2297      		sbiw r28,2
+ 152               	.LVL12:
+ 153 0062 3296      		adiw r30,2
+ 154               	.LVL13:
+ 155 0064 2097      		sbiw r28,0
+ 156 0066 01F4      		brne .L13
+ 157               	.LVL14:
+ 158               	.LBE9:
+ 159               	.LBE8:
+ 224:FatFs/mmc_avr.c **** 
+ 225:FatFs/mmc_avr.c **** 	rcvr_spi_multi(buff, btr);		/* Receive the data block into buffer */
+ 226:FatFs/mmc_avr.c **** 	xchg_spi(0xFF);					/* Discard CRC */
+ 160               		.loc 1 226 0
+ 161 0068 8FEF      		ldi r24,lo8(-1)
+ 162 006a 0E94 0000 		call xchg_spi
+ 163               	.LVL15:
+ 227:FatFs/mmc_avr.c **** 	xchg_spi(0xFF);
+ 164               		.loc 1 227 0
+ 165 006e 8FEF      		ldi r24,lo8(-1)
+ 166 0070 0E94 0000 		call xchg_spi
+ 167               	.LVL16:
+ 168 0074 81E0      		ldi r24,lo8(1)
+ 169 0076 90E0      		ldi r25,0
+ 170 0078 00C0      		rjmp .L10
+ 171               	.LVL17:
+ 172               	.L14:
+ 173               	.LBE7:
+ 174               	.LBE6:
+ 223:FatFs/mmc_avr.c **** 
+ 175               		.loc 1 223 0
+ 176 007a 80E0      		ldi r24,0
+ 177 007c 90E0      		ldi r25,0
+ 178               	.LVL18:
+ 179               	.L10:
+ 180               	/* epilogue start */
+ 228:FatFs/mmc_avr.c **** 
+ 229:FatFs/mmc_avr.c **** 	return 1;						/* Return with success */
+ 230:FatFs/mmc_avr.c **** }
+ 181               		.loc 1 230 0
+ 182 007e DF91      		pop r29
+ 183 0080 CF91      		pop r28
+ 184 0082 1F91      		pop r17
+ 185 0084 0F91      		pop r16
+ 186               	.LVL19:
+ 187 0086 0895      		ret
+ 188               		.cfi_endproc
+ 189               	.LFE8:
+ 192               	wait_ready.constprop.2:
+ 193               	.LFB21:
+ 159:FatFs/mmc_avr.c **** 	UINT wt			/* Timeout [ms] */
+ 194               		.loc 1 159 0
+ 195               		.cfi_startproc
+ 196               	/* prologue: function */
+ 197               	/* frame size = 0 */
+ 198               	/* stack size = 0 */
+ 199               	.L__stack_usage = 0
+ 200               	.LVL20:
+ 166:FatFs/mmc_avr.c **** 	do
+ 201               		.loc 1 166 0
+ 202 0088 82E3      		ldi r24,lo8(50)
+ 203 008a 8093 0000 		sts Timer2,r24
+ 204               	.L21:
+ 168:FatFs/mmc_avr.c **** 	while (d != 0xFF && Timer2);
+ 205               		.loc 1 168 0
+ 206 008e 8FEF      		ldi r24,lo8(-1)
+ 207 0090 0E94 0000 		call xchg_spi
+ 208               	.LVL21:
+ 209 0094 282F      		mov r18,r24
+ 210               	.LVL22:
+ 169:FatFs/mmc_avr.c **** 
+ 211               		.loc 1 169 0
+ 212 0096 8F3F      		cpi r24,lo8(-1)
+ 213 0098 01F0      		breq .L20
+ 214 009a 8091 0000 		lds r24,Timer2
+ 215 009e 8111      		cpse r24,__zero_reg__
+ 216 00a0 00C0      		rjmp .L21
+ 217               	.L20:
+ 171:FatFs/mmc_avr.c **** }
+ 218               		.loc 1 171 0
+ 219 00a2 81E0      		ldi r24,lo8(1)
+ 220 00a4 90E0      		ldi r25,0
+ 221 00a6 2F3F      		cpi r18,lo8(-1)
+ 222 00a8 01F0      		breq .L22
+ 223 00aa 80E0      		ldi r24,0
+ 224 00ac 90E0      		ldi r25,0
+ 225               	.L22:
+ 172:FatFs/mmc_avr.c **** 
+ 226               		.loc 1 172 0
+ 227 00ae 0895      		ret
+ 228               		.cfi_endproc
+ 229               	.LFE21:
+ 232               	select:
+ 233               	.LFB7:
+ 195:FatFs/mmc_avr.c **** 	CS_LOW();		/* Set CS# low */
+ 234               		.loc 1 195 0
+ 235               		.cfi_startproc
+ 236 00b0 CF93      		push r28
+ 237               	.LCFI4:
+ 238               		.cfi_def_cfa_offset 3
+ 239               		.cfi_offset 28, -2
+ 240 00b2 DF93      		push r29
+ 241               	.LCFI5:
+ 242               		.cfi_def_cfa_offset 4
+ 243               		.cfi_offset 29, -3
+ 244               	/* prologue: function */
+ 245               	/* frame size = 0 */
+ 246               	/* stack size = 2 */
+ 247               	.L__stack_usage = 2
+ 196:FatFs/mmc_avr.c **** 	xchg_spi(0xFF);	/* Dummy clock (force DO enabled) */
+ 248               		.loc 1 196 0
+ 249 00b4 C498      		cbi 0x18,4
+ 197:FatFs/mmc_avr.c **** 	if (wait_ready(500)) return 1;	/* Wait for card ready */
+ 250               		.loc 1 197 0
+ 251 00b6 8FEF      		ldi r24,lo8(-1)
+ 252 00b8 0E94 0000 		call xchg_spi
+ 253               	.LVL23:
+ 198:FatFs/mmc_avr.c **** 
+ 254               		.loc 1 198 0
+ 255 00bc 0E94 0000 		call wait_ready.constprop.2
+ 256               	.LVL24:
+ 257 00c0 EC01      		movw r28,r24
+ 258 00c2 892B      		or r24,r25
+ 259 00c4 01F4      		brne .L32
+ 200:FatFs/mmc_avr.c **** 	return 0;	/* Timeout */
+ 260               		.loc 1 200 0
+ 261 00c6 0E94 0000 		call deselect
+ 262               	.LVL25:
+ 201:FatFs/mmc_avr.c **** }
+ 263               		.loc 1 201 0
+ 264 00ca 00C0      		rjmp .L31
+ 265               	.L32:
+ 198:FatFs/mmc_avr.c **** 
+ 266               		.loc 1 198 0
+ 267 00cc C1E0      		ldi r28,lo8(1)
+ 268 00ce D0E0      		ldi r29,0
+ 269               	.L31:
+ 202:FatFs/mmc_avr.c **** 
+ 270               		.loc 1 202 0
+ 271 00d0 CE01      		movw r24,r28
+ 272               	/* epilogue start */
+ 273 00d2 DF91      		pop r29
+ 274 00d4 CF91      		pop r28
+ 275 00d6 0895      		ret
+ 276               		.cfi_endproc
+ 277               	.LFE7:
+ 280               	send_cmd:
+ 281               	.LFB10:
+ 231:FatFs/mmc_avr.c **** 
+ 232:FatFs/mmc_avr.c **** 
+ 233:FatFs/mmc_avr.c **** 
+ 234:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 235:FatFs/mmc_avr.c **** /* Send a data packet to MMC                                             */
+ 236:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 237:FatFs/mmc_avr.c **** 
+ 238:FatFs/mmc_avr.c **** #if	_USE_WRITE
+ 239:FatFs/mmc_avr.c **** static
+ 240:FatFs/mmc_avr.c **** int xmit_datablock (
+ 241:FatFs/mmc_avr.c **** 	const BYTE *buff,	/* 512 byte data block to be transmitted */
+ 242:FatFs/mmc_avr.c **** 	BYTE token			/* Data/Stop token */
+ 243:FatFs/mmc_avr.c **** )
+ 244:FatFs/mmc_avr.c **** {
+ 245:FatFs/mmc_avr.c **** 	BYTE resp;
+ 246:FatFs/mmc_avr.c **** 
+ 247:FatFs/mmc_avr.c **** 
+ 248:FatFs/mmc_avr.c **** 	if (!wait_ready(500)) return 0;
+ 249:FatFs/mmc_avr.c **** 
+ 250:FatFs/mmc_avr.c **** 	xchg_spi(token);					/* Xmit data token */
+ 251:FatFs/mmc_avr.c **** 	if (token != 0xFD) {	/* Is data token */
+ 252:FatFs/mmc_avr.c **** 		xmit_spi_multi(buff, 512);		/* Xmit the data block to the MMC */
+ 253:FatFs/mmc_avr.c **** 		xchg_spi(0xFF);					/* CRC (Dummy) */
+ 254:FatFs/mmc_avr.c **** 		xchg_spi(0xFF);
+ 255:FatFs/mmc_avr.c **** 		resp = xchg_spi(0xFF);			/* Reveive data response */
+ 256:FatFs/mmc_avr.c **** 		if ((resp & 0x1F) != 0x05)		/* If not accepted, return with error */
+ 257:FatFs/mmc_avr.c **** 			return 0;
+ 258:FatFs/mmc_avr.c **** 	}
+ 259:FatFs/mmc_avr.c **** 
+ 260:FatFs/mmc_avr.c **** 	return 1;
+ 261:FatFs/mmc_avr.c **** }
+ 262:FatFs/mmc_avr.c **** #endif
+ 263:FatFs/mmc_avr.c **** 
+ 264:FatFs/mmc_avr.c **** 
+ 265:FatFs/mmc_avr.c **** 
+ 266:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 267:FatFs/mmc_avr.c **** /* Send a command packet to MMC                                          */
+ 268:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 269:FatFs/mmc_avr.c **** 
+ 270:FatFs/mmc_avr.c **** static
+ 271:FatFs/mmc_avr.c **** BYTE send_cmd (		/* Returns R1 resp (bit7==1:Send failed) */
+ 272:FatFs/mmc_avr.c **** 	BYTE cmd,		/* Command index */
+ 273:FatFs/mmc_avr.c **** 	DWORD arg		/* Argument */
+ 274:FatFs/mmc_avr.c **** )
+ 275:FatFs/mmc_avr.c **** {
+ 282               		.loc 1 275 0
+ 283               		.cfi_startproc
+ 284               	.LVL26:
+ 285 00d8 FF92      		push r15
+ 286               	.LCFI6:
+ 287               		.cfi_def_cfa_offset 3
+ 288               		.cfi_offset 15, -2
+ 289 00da 0F93      		push r16
+ 290               	.LCFI7:
+ 291               		.cfi_def_cfa_offset 4
+ 292               		.cfi_offset 16, -3
+ 293 00dc 1F93      		push r17
+ 294               	.LCFI8:
+ 295               		.cfi_def_cfa_offset 5
+ 296               		.cfi_offset 17, -4
+ 297 00de CF93      		push r28
+ 298               	.LCFI9:
+ 299               		.cfi_def_cfa_offset 6
+ 300               		.cfi_offset 28, -5
+ 301 00e0 DF93      		push r29
+ 302               	.LCFI10:
+ 303               		.cfi_def_cfa_offset 7
+ 304               		.cfi_offset 29, -6
+ 305               	/* prologue: function */
+ 306               	/* frame size = 0 */
+ 307               	/* stack size = 5 */
+ 308               	.L__stack_usage = 5
+ 309 00e2 C82F      		mov r28,r24
+ 310 00e4 D42F      		mov r29,r20
+ 311 00e6 152F      		mov r17,r21
+ 312 00e8 062F      		mov r16,r22
+ 313 00ea F72E      		mov r15,r23
+ 276:FatFs/mmc_avr.c **** 	BYTE n, res;
+ 277:FatFs/mmc_avr.c **** 
+ 278:FatFs/mmc_avr.c **** 
+ 279:FatFs/mmc_avr.c **** 	if (cmd & 0x80) {	/* ACMD<n> is the command sequense of CMD55-CMD<n> */
+ 314               		.loc 1 279 0
+ 315 00ec 87FF      		sbrs r24,7
+ 316 00ee 00C0      		rjmp .L34
+ 317               	.LVL27:
+ 280:FatFs/mmc_avr.c **** 		cmd &= 0x7F;
+ 281:FatFs/mmc_avr.c **** 		res = send_cmd(CMD55, 0);
+ 318               		.loc 1 281 0
+ 319 00f0 40E0      		ldi r20,0
+ 320 00f2 50E0      		ldi r21,0
+ 321 00f4 BA01      		movw r22,r20
+ 322               	.LVL28:
+ 323 00f6 87E3      		ldi r24,lo8(55)
+ 324               	.LVL29:
+ 325 00f8 0E94 0000 		call send_cmd
+ 326               	.LVL30:
+ 282:FatFs/mmc_avr.c **** 		if (res > 1) return res;
+ 327               		.loc 1 282 0
+ 328 00fc 8230      		cpi r24,lo8(2)
+ 329 00fe 00F4      		brsh .L49
+ 280:FatFs/mmc_avr.c **** 		cmd &= 0x7F;
+ 330               		.loc 1 280 0
+ 331 0100 CF77      		andi r28,lo8(127)
+ 332               	.LVL31:
+ 333               	.L34:
+ 283:FatFs/mmc_avr.c **** 	}
+ 284:FatFs/mmc_avr.c **** 
+ 285:FatFs/mmc_avr.c **** 	/* Select the card and wait for ready except to stop multiple block read */
+ 286:FatFs/mmc_avr.c **** 	if (cmd != CMD12) {
+ 334               		.loc 1 286 0
+ 335 0102 CC30      		cpi r28,lo8(12)
+ 336 0104 01F4      		brne .L36
+ 337               	.L39:
+ 287:FatFs/mmc_avr.c **** 		deselect();
+ 288:FatFs/mmc_avr.c **** 		if (!select()) return 0xFF;
+ 289:FatFs/mmc_avr.c **** 	}
+ 290:FatFs/mmc_avr.c **** 
+ 291:FatFs/mmc_avr.c **** 	/* Send command packet */
+ 292:FatFs/mmc_avr.c **** 	xchg_spi(0x40 | cmd);				/* Start + Command index */
+ 338               		.loc 1 292 0
+ 339 0106 8C2F      		mov r24,r28
+ 340 0108 8064      		ori r24,lo8(64)
+ 341 010a 0E94 0000 		call xchg_spi
+ 342               	.LVL32:
+ 293:FatFs/mmc_avr.c **** 	xchg_spi((BYTE)(arg >> 24));		/* Argument[31..24] */
+ 343               		.loc 1 293 0
+ 344 010e 8F2D      		mov r24,r15
+ 345 0110 0E94 0000 		call xchg_spi
+ 346               	.LVL33:
+ 294:FatFs/mmc_avr.c **** 	xchg_spi((BYTE)(arg >> 16));		/* Argument[23..16] */
+ 347               		.loc 1 294 0
+ 348 0114 802F      		mov r24,r16
+ 349 0116 0E94 0000 		call xchg_spi
+ 350               	.LVL34:
+ 295:FatFs/mmc_avr.c **** 	xchg_spi((BYTE)(arg >> 8));			/* Argument[15..8] */
+ 351               		.loc 1 295 0
+ 352 011a 812F      		mov r24,r17
+ 353 011c 0E94 0000 		call xchg_spi
+ 354               	.LVL35:
+ 296:FatFs/mmc_avr.c **** 	xchg_spi((BYTE)arg);				/* Argument[7..0] */
+ 355               		.loc 1 296 0
+ 356 0120 8D2F      		mov r24,r29
+ 357 0122 0E94 0000 		call xchg_spi
+ 358               	.LVL36:
+ 297:FatFs/mmc_avr.c **** 	n = 0x01;							/* Dummy CRC + Stop */
+ 298:FatFs/mmc_avr.c **** 	if (cmd == CMD0) n = 0x95;			/* Valid CRC for CMD0(0) + Stop */
+ 359               		.loc 1 298 0
+ 360 0126 CC23      		tst r28
+ 361 0128 01F0      		breq .L37
+ 362 012a 00C0      		rjmp .L51
+ 363               	.LVL37:
+ 364               	.L36:
+ 287:FatFs/mmc_avr.c **** 		if (!select()) return 0xFF;
+ 365               		.loc 1 287 0
+ 366 012c 0E94 0000 		call deselect
+ 367               	.LVL38:
+ 288:FatFs/mmc_avr.c **** 	}
+ 368               		.loc 1 288 0
+ 369 0130 0E94 0000 		call select
+ 370               	.LVL39:
+ 371 0134 892B      		or r24,r25
+ 372 0136 01F4      		brne .L39
+ 373 0138 8FEF      		ldi r24,lo8(-1)
+ 374 013a 00C0      		rjmp .L49
+ 375               	.LVL40:
+ 376               	.L51:
+ 299:FatFs/mmc_avr.c **** 	if (cmd == CMD8) n = 0x87;			/* Valid CRC for CMD8(0x1AA) Stop */
+ 377               		.loc 1 299 0
+ 378 013c C830      		cpi r28,lo8(8)
+ 379 013e 01F4      		brne .L45
+ 380 0140 87E8      		ldi r24,lo8(-121)
+ 381 0142 00C0      		rjmp .L40
+ 382               	.L45:
+ 297:FatFs/mmc_avr.c **** 	if (cmd == CMD0) n = 0x95;			/* Valid CRC for CMD0(0) + Stop */
+ 383               		.loc 1 297 0
+ 384 0144 81E0      		ldi r24,lo8(1)
+ 385               	.L40:
+ 386               	.LVL41:
+ 300:FatFs/mmc_avr.c **** 	xchg_spi(n);
+ 387               		.loc 1 300 0
+ 388 0146 0E94 0000 		call xchg_spi
+ 389               	.LVL42:
+ 301:FatFs/mmc_avr.c **** 
+ 302:FatFs/mmc_avr.c **** 	/* Receive command response */
+ 303:FatFs/mmc_avr.c **** 	if (cmd == CMD12) xchg_spi(0xFF);		/* Skip a stuff byte when stop reading */
+ 390               		.loc 1 303 0
+ 391 014a CC30      		cpi r28,lo8(12)
+ 392 014c 01F4      		brne .L41
+ 393               		.loc 1 303 0 is_stmt 0 discriminator 1
+ 394 014e 8FEF      		ldi r24,lo8(-1)
+ 395               	.L50:
+ 396 0150 0E94 0000 		call xchg_spi
+ 397               	.LVL43:
+ 398               	.L41:
+ 299:FatFs/mmc_avr.c **** 	xchg_spi(n);
+ 399               		.loc 1 299 0 is_stmt 1 discriminator 2
+ 400 0154 CAE0      		ldi r28,lo8(10)
+ 401               	.LVL44:
+ 402               	.L42:
+ 304:FatFs/mmc_avr.c **** 	n = 10;								/* Wait for a valid response in timeout of 10 attempts */
+ 305:FatFs/mmc_avr.c **** 	do
+ 306:FatFs/mmc_avr.c **** 		res = xchg_spi(0xFF);
+ 403               		.loc 1 306 0 discriminator 2
+ 404 0156 8FEF      		ldi r24,lo8(-1)
+ 405 0158 0E94 0000 		call xchg_spi
+ 406               	.LVL45:
+ 307:FatFs/mmc_avr.c **** 	while ((res & 0x80) && --n);
+ 407               		.loc 1 307 0 discriminator 2
+ 408 015c 87FF      		sbrs r24,7
+ 409 015e 00C0      		rjmp .L49
+ 410               	.LVL46:
+ 411 0160 C150      		subi r28,lo8(-(-1))
+ 412               	.LVL47:
+ 413               		.loc 1 307 0 is_stmt 0 discriminator 1
+ 414 0162 01F4      		brne .L42
+ 415 0164 00C0      		rjmp .L49
+ 416               	.LVL48:
+ 417               	.L37:
+ 300:FatFs/mmc_avr.c **** 
+ 418               		.loc 1 300 0 is_stmt 1
+ 419 0166 85E9      		ldi r24,lo8(-107)
+ 420 0168 00C0      		rjmp .L50
+ 421               	.LVL49:
+ 422               	.L49:
+ 423               	/* epilogue start */
+ 308:FatFs/mmc_avr.c **** 
+ 309:FatFs/mmc_avr.c **** 	return res;			/* Return with the response value */
+ 310:FatFs/mmc_avr.c **** }
+ 424               		.loc 1 310 0
+ 425 016a DF91      		pop r29
+ 426 016c CF91      		pop r28
+ 427 016e 1F91      		pop r17
+ 428 0170 0F91      		pop r16
+ 429 0172 FF90      		pop r15
+ 430 0174 0895      		ret
+ 431               		.cfi_endproc
+ 432               	.LFE10:
+ 435               	xmit_datablock:
+ 436               	.LFB9:
+ 244:FatFs/mmc_avr.c **** 	BYTE resp;
+ 437               		.loc 1 244 0
+ 438               		.cfi_startproc
+ 439               	.LVL50:
+ 440 0176 1F93      		push r17
+ 441               	.LCFI11:
+ 442               		.cfi_def_cfa_offset 3
+ 443               		.cfi_offset 17, -2
+ 444 0178 CF93      		push r28
+ 445               	.LCFI12:
+ 446               		.cfi_def_cfa_offset 4
+ 447               		.cfi_offset 28, -3
+ 448 017a DF93      		push r29
+ 449               	.LCFI13:
+ 450               		.cfi_def_cfa_offset 5
+ 451               		.cfi_offset 29, -4
+ 452               	/* prologue: function */
+ 453               	/* frame size = 0 */
+ 454               	/* stack size = 3 */
+ 455               	.L__stack_usage = 3
+ 456 017c 182F      		mov r17,r24
+ 457 017e D92F      		mov r29,r25
+ 458 0180 C62F      		mov r28,r22
+ 248:FatFs/mmc_avr.c **** 
+ 459               		.loc 1 248 0
+ 460 0182 0E94 0000 		call wait_ready.constprop.2
+ 461               	.LVL51:
+ 462 0186 0097      		sbiw r24,0
+ 463 0188 01F0      		breq .L53
+ 250:FatFs/mmc_avr.c **** 	if (token != 0xFD) {	/* Is data token */
+ 464               		.loc 1 250 0
+ 465 018a 8C2F      		mov r24,r28
+ 466 018c 0E94 0000 		call xchg_spi
+ 467               	.LVL52:
+ 251:FatFs/mmc_avr.c **** 		xmit_spi_multi(buff, 512);		/* Xmit the data block to the MMC */
+ 468               		.loc 1 251 0
+ 469 0190 CD3F      		cpi r28,lo8(-3)
+ 470 0192 01F0      		breq .L58
+ 471 0194 E12F      		mov r30,r17
+ 472 0196 FD2F      		mov r31,r29
+ 473 0198 CF01      		movw r24,r30
+ 474 019a 9E5F      		subi r25,-2
+ 475               	.L56:
+ 476               	.LVL53:
+ 477               	.LBB14:
+ 478               	.LBB15:
+ 479               	.LBB16:
+ 480               	.LBB17:
+ 134:FatFs/mmc_avr.c **** 		SPDR = *p++;  while(! (SPSR & (1<<SPIF)));
+ 481               		.loc 1 134 0
+ 482 019c 2081      		ld r18,Z
+ 483 019e 2FB9      		out 0xf,r18
+ 484               	.L54:
+ 485 01a0 779B      		sbis 0xe,7
+ 486 01a2 00C0      		rjmp .L54
+ 487               	.LVL54:
+ 135:FatFs/mmc_avr.c **** 	} while (cnt -= 2);
+ 488               		.loc 1 135 0
+ 489 01a4 2181      		ldd r18,Z+1
+ 490 01a6 2FB9      		out 0xf,r18
+ 491               	.L55:
+ 492 01a8 779B      		sbis 0xe,7
+ 493 01aa 00C0      		rjmp .L55
+ 494               	.LVL55:
+ 495 01ac 3296      		adiw r30,2
+ 496               	.LVL56:
+ 136:FatFs/mmc_avr.c **** }
+ 497               		.loc 1 136 0
+ 498 01ae E817      		cp r30,r24
+ 499 01b0 F907      		cpc r31,r25
+ 500 01b2 01F4      		brne .L56
+ 501               	.LVL57:
+ 502               	.LBE17:
+ 503               	.LBE16:
+ 253:FatFs/mmc_avr.c **** 		xchg_spi(0xFF);
+ 504               		.loc 1 253 0
+ 505 01b4 8FEF      		ldi r24,lo8(-1)
+ 506 01b6 0E94 0000 		call xchg_spi
+ 507               	.LVL58:
+ 254:FatFs/mmc_avr.c **** 		resp = xchg_spi(0xFF);			/* Reveive data response */
+ 508               		.loc 1 254 0
+ 509 01ba 8FEF      		ldi r24,lo8(-1)
+ 510 01bc 0E94 0000 		call xchg_spi
+ 511               	.LVL59:
+ 255:FatFs/mmc_avr.c **** 		if ((resp & 0x1F) != 0x05)		/* If not accepted, return with error */
+ 512               		.loc 1 255 0
+ 513 01c0 8FEF      		ldi r24,lo8(-1)
+ 514 01c2 0E94 0000 		call xchg_spi
+ 515               	.LVL60:
+ 516               	.LBE15:
+ 517               	.LBE14:
+ 248:FatFs/mmc_avr.c **** 
+ 518               		.loc 1 248 0
+ 519 01c6 8F71      		andi r24,lo8(31)
+ 520               	.LVL61:
+ 521 01c8 31E0      		ldi r19,lo8(1)
+ 522 01ca 20E0      		ldi r18,0
+ 523 01cc 8530      		cpi r24,lo8(5)
+ 524 01ce 01F0      		breq .L57
+ 525 01d0 30E0      		ldi r19,0
+ 526               	.L57:
+ 527 01d2 832F      		mov r24,r19
+ 528 01d4 922F      		mov r25,r18
+ 529 01d6 00C0      		rjmp .L53
+ 530               	.L58:
+ 260:FatFs/mmc_avr.c **** }
+ 531               		.loc 1 260 0
+ 532 01d8 81E0      		ldi r24,lo8(1)
+ 533 01da 90E0      		ldi r25,0
+ 534               	.L53:
+ 535               	/* epilogue start */
+ 261:FatFs/mmc_avr.c **** #endif
+ 536               		.loc 1 261 0
+ 537 01dc DF91      		pop r29
+ 538 01de CF91      		pop r28
+ 539               	.LVL62:
+ 540 01e0 1F91      		pop r17
+ 541 01e2 0895      		ret
+ 542               		.cfi_endproc
+ 543               	.LFE9:
+ 545               	.global	disk_initialize
+ 547               	disk_initialize:
+ 548               	.LFB11:
+ 311:FatFs/mmc_avr.c **** 
+ 312:FatFs/mmc_avr.c **** 
+ 313:FatFs/mmc_avr.c **** 
+ 314:FatFs/mmc_avr.c **** /*--------------------------------------------------------------------------
+ 315:FatFs/mmc_avr.c **** 
+ 316:FatFs/mmc_avr.c ****    Public Functions
+ 317:FatFs/mmc_avr.c **** 
+ 318:FatFs/mmc_avr.c **** ---------------------------------------------------------------------------*/
+ 319:FatFs/mmc_avr.c **** 
+ 320:FatFs/mmc_avr.c **** 
+ 321:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 322:FatFs/mmc_avr.c **** /* Initialize Disk Drive                                                 */
+ 323:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 324:FatFs/mmc_avr.c **** 
+ 325:FatFs/mmc_avr.c **** DSTATUS disk_initialize (
+ 326:FatFs/mmc_avr.c **** 	BYTE pdrv		/* Physical drive nmuber (0) */
+ 327:FatFs/mmc_avr.c **** )
+ 328:FatFs/mmc_avr.c **** {
+ 549               		.loc 1 328 0
+ 550               		.cfi_startproc
+ 551               	.LVL63:
+ 552 01e4 CF92      		push r12
+ 553               	.LCFI14:
+ 554               		.cfi_def_cfa_offset 3
+ 555               		.cfi_offset 12, -2
+ 556 01e6 DF92      		push r13
+ 557               	.LCFI15:
+ 558               		.cfi_def_cfa_offset 4
+ 559               		.cfi_offset 13, -3
+ 560 01e8 EF92      		push r14
+ 561               	.LCFI16:
+ 562               		.cfi_def_cfa_offset 5
+ 563               		.cfi_offset 14, -4
+ 564 01ea FF92      		push r15
+ 565               	.LCFI17:
+ 566               		.cfi_def_cfa_offset 6
+ 567               		.cfi_offset 15, -5
+ 568 01ec 0F93      		push r16
+ 569               	.LCFI18:
+ 570               		.cfi_def_cfa_offset 7
+ 571               		.cfi_offset 16, -6
+ 572 01ee 1F93      		push r17
+ 573               	.LCFI19:
+ 574               		.cfi_def_cfa_offset 8
+ 575               		.cfi_offset 17, -7
+ 576 01f0 CF93      		push r28
+ 577               	.LCFI20:
+ 578               		.cfi_def_cfa_offset 9
+ 579               		.cfi_offset 28, -8
+ 580 01f2 DF93      		push r29
+ 581               	.LCFI21:
+ 582               		.cfi_def_cfa_offset 10
+ 583               		.cfi_offset 29, -9
+ 584 01f4 00D0      		rcall .
+ 585 01f6 00D0      		rcall .
+ 586               	.LCFI22:
+ 587               		.cfi_def_cfa_offset 14
+ 588 01f8 CDB7      		in r28,__SP_L__
+ 589 01fa DEB7      		in r29,__SP_H__
+ 590               	.LCFI23:
+ 591               		.cfi_def_cfa_register 28
+ 592               	/* prologue: function */
+ 593               	/* frame size = 4 */
+ 594               	/* stack size = 12 */
+ 595               	.L__stack_usage = 12
+ 329:FatFs/mmc_avr.c **** 	BYTE n, cmd, ty, ocr[4];
+ 330:FatFs/mmc_avr.c **** 
+ 331:FatFs/mmc_avr.c **** 
+ 332:FatFs/mmc_avr.c **** 	if (pdrv) return STA_NOINIT;		/* Supports only single drive */
+ 596               		.loc 1 332 0
+ 597 01fc 8111      		cpse r24,__zero_reg__
+ 598 01fe 00C0      		rjmp .L88
+ 333:FatFs/mmc_avr.c **** 	power_off();						/* Turn off the socket power to reset the card */
+ 599               		.loc 1 333 0
+ 600 0200 0E94 0000 		call power_off
+ 601               	.LVL64:
+ 334:FatFs/mmc_avr.c **** 	if (Stat & STA_NODISK) return Stat;	/* No card in the socket */
+ 602               		.loc 1 334 0
+ 603 0204 8091 0000 		lds r24,Stat
+ 604 0208 81FD      		sbrc r24,1
+ 605 020a 00C0      		rjmp .L87
+ 606               	.LBB20:
+ 607               	.LBB21:
+  85:FatFs/mmc_avr.c ****   PORTB|=(1<<SS);
+ 608               		.loc 1 85 0
+ 609 020c 87B3      		in r24,0x17
+ 610 020e 806B      		ori r24,lo8(-80)
+ 611 0210 87BB      		out 0x17,r24
+  86:FatFs/mmc_avr.c ****   DDRB&=~(MISO);	
+ 612               		.loc 1 86 0
+ 613 0212 C49A      		sbi 0x18,4
+  87:FatFs/mmc_avr.c ****   SPCR=(1<<SPE)|(1<<MSTR)|(1<<SPR0);
+ 614               		.loc 1 87 0
+ 615 0214 87B3      		in r24,0x17
+ 616 0216 897F      		andi r24,lo8(-7)
+ 617 0218 87BB      		out 0x17,r24
+  88:FatFs/mmc_avr.c ****   
+ 618               		.loc 1 88 0
+ 619 021a 81E5      		ldi r24,lo8(81)
+ 620 021c 8DB9      		out 0xd,r24
+  91:FatFs/mmc_avr.c **** 	
+ 621               		.loc 1 91 0
+ 622 021e 8BE9      		ldi r24,lo8(-101)
+ 623 0220 83BD      		out 0x23,r24
+  93:FatFs/mmc_avr.c **** 	TIMSK |= (1<<OCIE2);
+ 624               		.loc 1 93 0
+ 625 0222 8FE0      		ldi r24,lo8(15)
+ 626 0224 85BD      		out 0x25,r24
+  94:FatFs/mmc_avr.c **** 
+ 627               		.loc 1 94 0
+ 628 0226 89B7      		in r24,0x39
+ 629 0228 8068      		ori r24,lo8(-128)
+ 630 022a 89BF      		out 0x39,r24
+  96:FatFs/mmc_avr.c ****   
+ 631               		.loc 1 96 0
+ 632               	/* #APP */
+ 633               	 ;  96 "FatFs/mmc_avr.c" 1
+ 634 022c 7894      		sei
+ 635               	 ;  0 "" 2
+ 636               	/* #NOAPP */
+ 637               	.LBE21:
+ 638               	.LBE20:
+ 335:FatFs/mmc_avr.c **** 	power_on();							/* Turn on the socket power */
+ 336:FatFs/mmc_avr.c **** 	FCLK_SLOW();
+ 639               		.loc 1 336 0
+ 640 022e 82E5      		ldi r24,lo8(82)
+ 641 0230 8DB9      		out 0xd,r24
+ 642               	.LVL65:
+ 643 0232 1AE0      		ldi r17,lo8(10)
+ 644               	.LVL66:
+ 645               	.L71:
+ 337:FatFs/mmc_avr.c **** 	for (n = 10; n; n--) xchg_spi(0xFF);	/* 80 dummy clocks */
+ 646               		.loc 1 337 0 discriminator 3
+ 647 0234 8FEF      		ldi r24,lo8(-1)
+ 648 0236 0E94 0000 		call xchg_spi
+ 649               	.LVL67:
+ 650 023a 1150      		subi r17,lo8(-(-1))
+ 651               	.LVL68:
+ 652 023c 01F4      		brne .L71
+ 653               	.LVL69:
+ 338:FatFs/mmc_avr.c **** 
+ 339:FatFs/mmc_avr.c **** 	ty = 0;
+ 340:FatFs/mmc_avr.c **** 	if (send_cmd(CMD0, 0) == 1) {			/* Enter Idle state */
+ 654               		.loc 1 340 0
+ 655 023e 40E0      		ldi r20,0
+ 656 0240 50E0      		ldi r21,0
+ 657 0242 BA01      		movw r22,r20
+ 658 0244 80E0      		ldi r24,0
+ 659 0246 0E94 0000 		call send_cmd
+ 660               	.LVL70:
+ 661 024a 8130      		cpi r24,lo8(1)
+ 662 024c 01F0      		breq .+2
+ 663 024e 00C0      		rjmp .L72
+ 341:FatFs/mmc_avr.c **** 		Timer1 = 100;						/* Initialization timeout of 1000 msec */
+ 664               		.loc 1 341 0
+ 665 0250 84E6      		ldi r24,lo8(100)
+ 666 0252 8093 0000 		sts Timer1,r24
+ 342:FatFs/mmc_avr.c **** 		if (send_cmd(CMD8, 0x1AA) == 1) {	/* SDv2? */
+ 667               		.loc 1 342 0
+ 668 0256 4AEA      		ldi r20,lo8(-86)
+ 669 0258 51E0      		ldi r21,lo8(1)
+ 670 025a 60E0      		ldi r22,0
+ 671 025c 70E0      		ldi r23,0
+ 672 025e 88E0      		ldi r24,lo8(8)
+ 673 0260 0E94 0000 		call send_cmd
+ 674               	.LVL71:
+ 675 0264 8130      		cpi r24,lo8(1)
+ 676 0266 01F0      		breq .+2
+ 677 0268 00C0      		rjmp .L73
+ 678 026a 8E01      		movw r16,r28
+ 679 026c 0F5F      		subi r16,-1
+ 680 026e 1F4F      		sbci r17,-1
+ 681 0270 6E01      		movw r12,r28
+ 682 0272 85E0      		ldi r24,5
+ 683 0274 C80E      		add r12,r24
+ 684 0276 D11C      		adc r13,__zero_reg__
+ 685 0278 7801      		movw r14,r16
+ 686               	.LVL72:
+ 687               	.L74:
+ 343:FatFs/mmc_avr.c **** 			for (n = 0; n < 4; n++) ocr[n] = xchg_spi(0xFF);		/* Get trailing return value of R7 resp */
+ 688               		.loc 1 343 0 discriminator 3
+ 689 027a 8FEF      		ldi r24,lo8(-1)
+ 690 027c 0E94 0000 		call xchg_spi
+ 691               	.LVL73:
+ 692 0280 F701      		movw r30,r14
+ 693 0282 8193      		st Z+,r24
+ 694 0284 7F01      		movw r14,r30
+ 695 0286 CE16      		cp r12,r30
+ 696 0288 DF06      		cpc r13,r31
+ 697 028a 01F4      		brne .L74
+ 344:FatFs/mmc_avr.c **** 			if (ocr[2] == 0x01 && ocr[3] == 0xAA) {				/* The card can work at vdd range of 2.7-3.6V */
+ 698               		.loc 1 344 0
+ 699 028c 8B81      		ldd r24,Y+3
+ 700 028e 8130      		cpi r24,lo8(1)
+ 701 0290 01F0      		breq .+2
+ 702 0292 00C0      		rjmp .L72
+ 703               		.loc 1 344 0 is_stmt 0 discriminator 1
+ 704 0294 8C81      		ldd r24,Y+4
+ 705 0296 8A3A      		cpi r24,lo8(-86)
+ 706 0298 01F0      		breq .+2
+ 707 029a 00C0      		rjmp .L72
+ 708               	.L77:
+ 345:FatFs/mmc_avr.c **** 				while (Timer1 && send_cmd(ACMD41, 1UL << 30));	/* Wait for leaving idle state (ACMD41 with HCS 
+ 709               		.loc 1 345 0 is_stmt 1 discriminator 2
+ 710 029c 8091 0000 		lds r24,Timer1
+ 711 02a0 8111      		cpse r24,__zero_reg__
+ 712 02a2 00C0      		rjmp .L75
+ 713               	.L78:
+ 346:FatFs/mmc_avr.c **** 				if (Timer1 && send_cmd(CMD58, 0) == 0) {		/* Check CCS bit in the OCR */
+ 714               		.loc 1 346 0
+ 715 02a4 8091 0000 		lds r24,Timer1
+ 716 02a8 8823      		tst r24
+ 717 02aa 01F4      		brne .+2
+ 718 02ac 00C0      		rjmp .L72
+ 719 02ae 00C0      		rjmp .L103
+ 720               	.L75:
+ 345:FatFs/mmc_avr.c **** 				while (Timer1 && send_cmd(ACMD41, 1UL << 30));	/* Wait for leaving idle state (ACMD41 with HCS 
+ 721               		.loc 1 345 0 discriminator 1
+ 722 02b0 40E0      		ldi r20,0
+ 723 02b2 50E0      		ldi r21,0
+ 724 02b4 60E0      		ldi r22,0
+ 725 02b6 70E4      		ldi r23,lo8(64)
+ 726 02b8 89EA      		ldi r24,lo8(-87)
+ 727 02ba 0E94 0000 		call send_cmd
+ 728               	.LVL74:
+ 729 02be 8111      		cpse r24,__zero_reg__
+ 730 02c0 00C0      		rjmp .L77
+ 731 02c2 00C0      		rjmp .L78
+ 732               	.L103:
+ 733               		.loc 1 346 0 discriminator 1
+ 734 02c4 40E0      		ldi r20,0
+ 735 02c6 50E0      		ldi r21,0
+ 736 02c8 BA01      		movw r22,r20
+ 737 02ca 8AE3      		ldi r24,lo8(58)
+ 738 02cc 0E94 0000 		call send_cmd
+ 739               	.LVL75:
+ 740 02d0 8111      		cpse r24,__zero_reg__
+ 741 02d2 00C0      		rjmp .L72
+ 742               	.L79:
+ 347:FatFs/mmc_avr.c **** 					for (n = 0; n < 4; n++) ocr[n] = xchg_spi(0xFF);
+ 743               		.loc 1 347 0 discriminator 3
+ 744 02d4 8FEF      		ldi r24,lo8(-1)
+ 745 02d6 0E94 0000 		call xchg_spi
+ 746               	.LVL76:
+ 747 02da F801      		movw r30,r16
+ 748 02dc 8193      		st Z+,r24
+ 749 02de 8F01      		movw r16,r30
+ 750 02e0 CE16      		cp r12,r30
+ 751 02e2 DF06      		cpc r13,r31
+ 752 02e4 01F4      		brne .L79
+ 348:FatFs/mmc_avr.c **** 					ty = (ocr[0] & 0x40) ? CT_SD2 | CT_BLOCK : CT_SD2;	/* SDv2 */
+ 753               		.loc 1 348 0
+ 754 02e6 8981      		ldd r24,Y+1
+ 755 02e8 86FD      		sbrc r24,6
+ 756 02ea 00C0      		rjmp .L89
+ 757 02ec 14E0      		ldi r17,lo8(4)
+ 758 02ee 00C0      		rjmp .L80
+ 759               	.LVL77:
+ 760               	.L73:
+ 349:FatFs/mmc_avr.c **** 				}
+ 350:FatFs/mmc_avr.c **** 			}
+ 351:FatFs/mmc_avr.c **** 		} else {							/* SDv1 or MMCv3 */
+ 352:FatFs/mmc_avr.c **** 			if (send_cmd(ACMD41, 0) <= 1) 	{
+ 761               		.loc 1 352 0
+ 762 02f0 40E0      		ldi r20,0
+ 763 02f2 50E0      		ldi r21,0
+ 764 02f4 BA01      		movw r22,r20
+ 765 02f6 89EA      		ldi r24,lo8(-87)
+ 766 02f8 0E94 0000 		call send_cmd
+ 767               	.LVL78:
+ 768 02fc 8230      		cpi r24,lo8(2)
+ 769 02fe 00F0      		brlo .L90
+ 353:FatFs/mmc_avr.c **** 				ty = CT_SD1; cmd = ACMD41;	/* SDv1 */
+ 354:FatFs/mmc_avr.c **** 			} else {
+ 355:FatFs/mmc_avr.c **** 				ty = CT_MMC; cmd = CMD1;	/* MMCv3 */
+ 770               		.loc 1 355 0
+ 771 0300 11E0      		ldi r17,lo8(1)
+ 772               	.LVL79:
+ 773 0302 01E0      		ldi r16,lo8(1)
+ 774 0304 00C0      		rjmp .L84
+ 775               	.LVL80:
+ 776               	.L90:
+ 353:FatFs/mmc_avr.c **** 				ty = CT_SD1; cmd = ACMD41;	/* SDv1 */
+ 777               		.loc 1 353 0
+ 778 0306 12E0      		ldi r17,lo8(2)
+ 779               	.LVL81:
+ 780 0308 09EA      		ldi r16,lo8(-87)
+ 781               	.LVL82:
+ 782               	.L84:
+ 356:FatFs/mmc_avr.c **** 			}
+ 357:FatFs/mmc_avr.c **** 			while (Timer1 && send_cmd(cmd, 0));			/* Wait for leaving idle state */
+ 783               		.loc 1 357 0 discriminator 2
+ 784 030a 8091 0000 		lds r24,Timer1
+ 785 030e 8111      		cpse r24,__zero_reg__
+ 786 0310 00C0      		rjmp .L82
+ 787               	.L85:
+ 358:FatFs/mmc_avr.c **** 			if (!Timer1 || send_cmd(CMD16, 512) != 0)	/* Set R/W block length to 512 */
+ 788               		.loc 1 358 0
+ 789 0312 8091 0000 		lds r24,Timer1
+ 790 0316 8823      		tst r24
+ 791 0318 01F0      		breq .L72
+ 792 031a 00C0      		rjmp .L104
+ 793               	.L82:
+ 357:FatFs/mmc_avr.c **** 			if (!Timer1 || send_cmd(CMD16, 512) != 0)	/* Set R/W block length to 512 */
+ 794               		.loc 1 357 0 discriminator 1
+ 795 031c 40E0      		ldi r20,0
+ 796 031e 50E0      		ldi r21,0
+ 797 0320 BA01      		movw r22,r20
+ 798 0322 802F      		mov r24,r16
+ 799 0324 0E94 0000 		call send_cmd
+ 800               	.LVL83:
+ 801 0328 8111      		cpse r24,__zero_reg__
+ 802 032a 00C0      		rjmp .L84
+ 803 032c 00C0      		rjmp .L85
+ 804               	.L104:
+ 805               		.loc 1 358 0 discriminator 1
+ 806 032e 40E0      		ldi r20,0
+ 807 0330 52E0      		ldi r21,lo8(2)
+ 808 0332 60E0      		ldi r22,0
+ 809 0334 70E0      		ldi r23,0
+ 810 0336 80E1      		ldi r24,lo8(16)
+ 811 0338 0E94 0000 		call send_cmd
+ 812               	.LVL84:
+ 813 033c 8823      		tst r24
+ 814 033e 01F0      		breq .L80
+ 815               	.LVL85:
+ 816               	.L72:
+ 359:FatFs/mmc_avr.c **** 				ty = 0;
+ 817               		.loc 1 359 0
+ 818 0340 10E0      		ldi r17,0
+ 819 0342 00C0      		rjmp .L80
+ 820               	.LVL86:
+ 821               	.L89:
+ 348:FatFs/mmc_avr.c **** 				}
+ 822               		.loc 1 348 0
+ 823 0344 1CE0      		ldi r17,lo8(12)
+ 824               	.LVL87:
+ 825               	.L80:
+ 360:FatFs/mmc_avr.c **** 		}
+ 361:FatFs/mmc_avr.c **** 	}
+ 362:FatFs/mmc_avr.c **** 	CardType = ty;
+ 826               		.loc 1 362 0
+ 827 0346 1093 0000 		sts CardType,r17
+ 363:FatFs/mmc_avr.c **** 	deselect();
+ 828               		.loc 1 363 0
+ 829 034a 0E94 0000 		call deselect
+ 830               	.LVL88:
+ 364:FatFs/mmc_avr.c **** 
+ 365:FatFs/mmc_avr.c **** 	if (ty) {			/* Initialization succeded */
+ 831               		.loc 1 365 0
+ 832 034e 1123      		tst r17
+ 833 0350 01F0      		breq .L86
+ 366:FatFs/mmc_avr.c **** 		Stat &= ~STA_NOINIT;		/* Clear STA_NOINIT */
+ 834               		.loc 1 366 0
+ 835 0352 8091 0000 		lds r24,Stat
+ 836 0356 8E7F      		andi r24,lo8(-2)
+ 837 0358 8093 0000 		sts Stat,r24
+ 367:FatFs/mmc_avr.c **** 		FCLK_FAST();
+ 838               		.loc 1 367 0
+ 839 035c 80E5      		ldi r24,lo8(80)
+ 840 035e 8DB9      		out 0xd,r24
+ 841 0360 00C0      		rjmp .L87
+ 842               	.L86:
+ 843               	.LVL89:
+ 368:FatFs/mmc_avr.c **** 	} else {			/* Initialization failed */
+ 369:FatFs/mmc_avr.c **** 		power_off();
+ 844               		.loc 1 369 0
+ 845 0362 0E94 0000 		call power_off
+ 846               	.LVL90:
+ 847               	.L87:
+ 370:FatFs/mmc_avr.c **** 	}
+ 371:FatFs/mmc_avr.c **** 
+ 372:FatFs/mmc_avr.c **** 	return Stat;
+ 848               		.loc 1 372 0
+ 849 0366 8091 0000 		lds r24,Stat
+ 850 036a 00C0      		rjmp .L69
+ 851               	.LVL91:
+ 852               	.L88:
+ 332:FatFs/mmc_avr.c **** 	power_off();						/* Turn off the socket power to reset the card */
+ 853               		.loc 1 332 0
+ 854 036c 81E0      		ldi r24,lo8(1)
+ 855               	.LVL92:
+ 856               	.L69:
+ 857               	/* epilogue start */
+ 373:FatFs/mmc_avr.c **** }
+ 858               		.loc 1 373 0
+ 859 036e 0F90      		pop __tmp_reg__
+ 860 0370 0F90      		pop __tmp_reg__
+ 861 0372 0F90      		pop __tmp_reg__
+ 862 0374 0F90      		pop __tmp_reg__
+ 863 0376 DF91      		pop r29
+ 864 0378 CF91      		pop r28
+ 865 037a 1F91      		pop r17
+ 866 037c 0F91      		pop r16
+ 867 037e FF90      		pop r15
+ 868 0380 EF90      		pop r14
+ 869 0382 DF90      		pop r13
+ 870 0384 CF90      		pop r12
+ 871 0386 0895      		ret
+ 872               		.cfi_endproc
+ 873               	.LFE11:
+ 875               	.global	disk_status
+ 877               	disk_status:
+ 878               	.LFB12:
+ 374:FatFs/mmc_avr.c **** 
+ 375:FatFs/mmc_avr.c **** 
+ 376:FatFs/mmc_avr.c **** 
+ 377:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 378:FatFs/mmc_avr.c **** /* Get Disk Status                                                       */
+ 379:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 380:FatFs/mmc_avr.c **** 
+ 381:FatFs/mmc_avr.c **** DSTATUS disk_status (
+ 382:FatFs/mmc_avr.c **** 	BYTE pdrv		/* Physical drive nmuber (0) */
+ 383:FatFs/mmc_avr.c **** )
+ 384:FatFs/mmc_avr.c **** {
+ 879               		.loc 1 384 0
+ 880               		.cfi_startproc
+ 881               	.LVL93:
+ 882               	/* prologue: function */
+ 883               	/* frame size = 0 */
+ 884               	/* stack size = 0 */
+ 885               	.L__stack_usage = 0
+ 385:FatFs/mmc_avr.c **** 	if (pdrv) return STA_NOINIT;	/* Supports only single drive */
+ 886               		.loc 1 385 0
+ 887 0388 8111      		cpse r24,__zero_reg__
+ 888 038a 00C0      		rjmp .L107
+ 386:FatFs/mmc_avr.c **** 	return Stat;
+ 889               		.loc 1 386 0
+ 890 038c 8091 0000 		lds r24,Stat
+ 891               	.LVL94:
+ 892 0390 0895      		ret
+ 893               	.LVL95:
+ 894               	.L107:
+ 385:FatFs/mmc_avr.c **** 	if (pdrv) return STA_NOINIT;	/* Supports only single drive */
+ 895               		.loc 1 385 0
+ 896 0392 81E0      		ldi r24,lo8(1)
+ 897               	.LVL96:
+ 387:FatFs/mmc_avr.c **** }
+ 898               		.loc 1 387 0
+ 899 0394 0895      		ret
+ 900               		.cfi_endproc
+ 901               	.LFE12:
+ 903               	.global	disk_read
+ 905               	disk_read:
+ 906               	.LFB13:
+ 388:FatFs/mmc_avr.c **** 
+ 389:FatFs/mmc_avr.c **** 
+ 390:FatFs/mmc_avr.c **** 
+ 391:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 392:FatFs/mmc_avr.c **** /* Read Sector(s)                                                        */
+ 393:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 394:FatFs/mmc_avr.c **** 
+ 395:FatFs/mmc_avr.c **** DRESULT disk_read (
+ 396:FatFs/mmc_avr.c **** 	BYTE pdrv,			/* Physical drive nmuber (0) */
+ 397:FatFs/mmc_avr.c **** 	BYTE *buff,			/* Pointer to the data buffer to store read data */
+ 398:FatFs/mmc_avr.c **** 	DWORD sector,		/* Start sector number (LBA) */
+ 399:FatFs/mmc_avr.c **** 	UINT count			/* Sector count (1..128) */
+ 400:FatFs/mmc_avr.c **** )
+ 401:FatFs/mmc_avr.c **** {
+ 907               		.loc 1 401 0
+ 908               		.cfi_startproc
+ 909               	.LVL97:
+ 910 0396 EF92      		push r14
+ 911               	.LCFI24:
+ 912               		.cfi_def_cfa_offset 3
+ 913               		.cfi_offset 14, -2
+ 914 0398 FF92      		push r15
+ 915               	.LCFI25:
+ 916               		.cfi_def_cfa_offset 4
+ 917               		.cfi_offset 15, -3
+ 918 039a 0F93      		push r16
+ 919               	.LCFI26:
+ 920               		.cfi_def_cfa_offset 5
+ 921               		.cfi_offset 16, -4
+ 922 039c 1F93      		push r17
+ 923               	.LCFI27:
+ 924               		.cfi_def_cfa_offset 6
+ 925               		.cfi_offset 17, -5
+ 926 039e CF93      		push r28
+ 927               	.LCFI28:
+ 928               		.cfi_def_cfa_offset 7
+ 929               		.cfi_offset 28, -6
+ 930               	/* prologue: function */
+ 931               	/* frame size = 0 */
+ 932               	/* stack size = 5 */
+ 933               	.L__stack_usage = 5
+ 934 03a0 7B01      		movw r14,r22
+ 935 03a2 BA01      		movw r22,r20
+ 936 03a4 A901      		movw r20,r18
+ 402:FatFs/mmc_avr.c **** 	BYTE cmd;
+ 403:FatFs/mmc_avr.c **** 
+ 404:FatFs/mmc_avr.c **** 
+ 405:FatFs/mmc_avr.c **** 	if (pdrv || !count) return RES_PARERR;
+ 937               		.loc 1 405 0
+ 938 03a6 8111      		cpse r24,__zero_reg__
+ 939 03a8 00C0      		rjmp .L117
+ 940               		.loc 1 405 0 is_stmt 0 discriminator 2
+ 941 03aa 0115      		cp r16,__zero_reg__
+ 942 03ac 1105      		cpc r17,__zero_reg__
+ 943 03ae 01F0      		breq .L117
+ 406:FatFs/mmc_avr.c **** 	if (Stat & STA_NOINIT) return RES_NOTRDY;
+ 944               		.loc 1 406 0 is_stmt 1
+ 945 03b0 8091 0000 		lds r24,Stat
+ 946               	.LVL98:
+ 947 03b4 80FD      		sbrc r24,0
+ 948 03b6 00C0      		rjmp .L118
+ 407:FatFs/mmc_avr.c **** 
+ 408:FatFs/mmc_avr.c **** 	if (!(CardType & CT_BLOCK)) sector *= 512;	/* Convert to byte address if needed */
+ 949               		.loc 1 408 0
+ 950 03b8 8091 0000 		lds r24,CardType
+ 951 03bc 83FD      		sbrc r24,3
+ 952 03be 00C0      		rjmp .L110
+ 953               		.loc 1 408 0 is_stmt 0 discriminator 1
+ 954 03c0 89E0      		ldi r24,9
+ 955               		1:
+ 956 03c2 440F      		lsl r20
+ 957 03c4 551F      		rol r21
+ 958 03c6 661F      		rol r22
+ 959 03c8 771F      		rol r23
+ 960 03ca 8A95      		dec r24
+ 961 03cc 01F4      		brne 1b
+ 962               	.LVL99:
+ 963               	.L110:
+ 409:FatFs/mmc_avr.c **** 
+ 410:FatFs/mmc_avr.c **** 	cmd = count > 1 ? CMD18 : CMD17;			/*  READ_MULTIPLE_BLOCK : READ_SINGLE_BLOCK */
+ 964               		.loc 1 410 0 is_stmt 1
+ 965 03ce 0230      		cpi r16,2
+ 966 03d0 1105      		cpc r17,__zero_reg__
+ 967 03d2 00F4      		brsh .L119
+ 968 03d4 C1E1      		ldi r28,lo8(17)
+ 969 03d6 00C0      		rjmp .L111
+ 970               	.L119:
+ 971 03d8 C2E1      		ldi r28,lo8(18)
+ 972               	.L111:
+ 973               	.LVL100:
+ 411:FatFs/mmc_avr.c **** 	if (send_cmd(cmd, sector) == 0) {
+ 974               		.loc 1 411 0 discriminator 4
+ 975 03da 8C2F      		mov r24,r28
+ 976 03dc 0E94 0000 		call send_cmd
+ 977               	.LVL101:
+ 978 03e0 8111      		cpse r24,__zero_reg__
+ 979 03e2 00C0      		rjmp .L112
+ 980               	.L114:
+ 412:FatFs/mmc_avr.c **** 		do {
+ 413:FatFs/mmc_avr.c **** 			if (!rcvr_datablock(buff, 512)) break;
+ 981               		.loc 1 413 0
+ 982 03e4 60E0      		ldi r22,0
+ 983 03e6 72E0      		ldi r23,lo8(2)
+ 984 03e8 C701      		movw r24,r14
+ 985 03ea 0E94 0000 		call rcvr_datablock
+ 986               	.LVL102:
+ 987 03ee 892B      		or r24,r25
+ 988 03f0 01F0      		breq .L113
+ 414:FatFs/mmc_avr.c **** 			buff += 512;
+ 989               		.loc 1 414 0
+ 990 03f2 8EEF      		ldi r24,-2
+ 991 03f4 F81A      		sub r15,r24
+ 992               	.LVL103:
+ 415:FatFs/mmc_avr.c **** 		} while (--count);
+ 993               		.loc 1 415 0
+ 994 03f6 0150      		subi r16,1
+ 995 03f8 1109      		sbc r17,__zero_reg__
+ 996               	.LVL104:
+ 997 03fa 01F4      		brne .L114
+ 998               	.L113:
+ 416:FatFs/mmc_avr.c **** 		if (cmd == CMD18) send_cmd(CMD12, 0);	/* STOP_TRANSMISSION */
+ 999               		.loc 1 416 0
+ 1000 03fc C231      		cpi r28,lo8(18)
+ 1001 03fe 01F4      		brne .L112
+ 1002               		.loc 1 416 0 is_stmt 0 discriminator 1
+ 1003 0400 40E0      		ldi r20,0
+ 1004 0402 50E0      		ldi r21,0
+ 1005 0404 BA01      		movw r22,r20
+ 1006 0406 8CE0      		ldi r24,lo8(12)
+ 1007 0408 0E94 0000 		call send_cmd
+ 1008               	.LVL105:
+ 1009               	.L112:
+ 417:FatFs/mmc_avr.c **** 	}
+ 418:FatFs/mmc_avr.c **** 	deselect();
+ 1010               		.loc 1 418 0 is_stmt 1
+ 1011 040c 0E94 0000 		call deselect
+ 1012               	.LVL106:
+ 419:FatFs/mmc_avr.c **** 
+ 420:FatFs/mmc_avr.c **** 	return count ? RES_ERROR : RES_OK;
+ 1013               		.loc 1 420 0
+ 1014 0410 81E0      		ldi r24,lo8(1)
+ 1015 0412 012B      		or r16,r17
+ 1016 0414 01F4      		brne .L109
+ 1017 0416 80E0      		ldi r24,0
+ 1018 0418 00C0      		rjmp .L109
+ 1019               	.LVL107:
+ 1020               	.L117:
+ 405:FatFs/mmc_avr.c **** 	if (Stat & STA_NOINIT) return RES_NOTRDY;
+ 1021               		.loc 1 405 0
+ 1022 041a 84E0      		ldi r24,lo8(4)
+ 1023               	.LVL108:
+ 1024 041c 00C0      		rjmp .L109
+ 1025               	.L118:
+ 406:FatFs/mmc_avr.c **** 
+ 1026               		.loc 1 406 0
+ 1027 041e 83E0      		ldi r24,lo8(3)
+ 1028               	.LVL109:
+ 1029               	.L109:
+ 1030               	/* epilogue start */
+ 421:FatFs/mmc_avr.c **** }
+ 1031               		.loc 1 421 0
+ 1032 0420 CF91      		pop r28
+ 1033 0422 1F91      		pop r17
+ 1034 0424 0F91      		pop r16
+ 1035               	.LVL110:
+ 1036 0426 FF90      		pop r15
+ 1037 0428 EF90      		pop r14
+ 1038               	.LVL111:
+ 1039 042a 0895      		ret
+ 1040               		.cfi_endproc
+ 1041               	.LFE13:
+ 1043               	.global	disk_write
+ 1045               	disk_write:
+ 1046               	.LFB14:
+ 422:FatFs/mmc_avr.c **** 
+ 423:FatFs/mmc_avr.c **** 
+ 424:FatFs/mmc_avr.c **** 
+ 425:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 426:FatFs/mmc_avr.c **** /* Write Sector(s)                                                       */
+ 427:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 428:FatFs/mmc_avr.c **** 
+ 429:FatFs/mmc_avr.c **** #if _USE_WRITE
+ 430:FatFs/mmc_avr.c **** DRESULT disk_write (
+ 431:FatFs/mmc_avr.c **** 	BYTE pdrv,			/* Physical drive nmuber (0) */
+ 432:FatFs/mmc_avr.c **** 	const BYTE *buff,	/* Pointer to the data to be written */
+ 433:FatFs/mmc_avr.c **** 	DWORD sector,		/* Start sector number (LBA) */
+ 434:FatFs/mmc_avr.c **** 	UINT count			/* Sector count (1..128) */
+ 435:FatFs/mmc_avr.c **** )
+ 436:FatFs/mmc_avr.c **** {
+ 1047               		.loc 1 436 0
+ 1048               		.cfi_startproc
+ 1049               	.LVL112:
+ 1050 042c CF92      		push r12
+ 1051               	.LCFI29:
+ 1052               		.cfi_def_cfa_offset 3
+ 1053               		.cfi_offset 12, -2
+ 1054 042e DF92      		push r13
+ 1055               	.LCFI30:
+ 1056               		.cfi_def_cfa_offset 4
+ 1057               		.cfi_offset 13, -3
+ 1058 0430 EF92      		push r14
+ 1059               	.LCFI31:
+ 1060               		.cfi_def_cfa_offset 5
+ 1061               		.cfi_offset 14, -4
+ 1062 0432 FF92      		push r15
+ 1063               	.LCFI32:
+ 1064               		.cfi_def_cfa_offset 6
+ 1065               		.cfi_offset 15, -5
+ 1066 0434 0F93      		push r16
+ 1067               	.LCFI33:
+ 1068               		.cfi_def_cfa_offset 7
+ 1069               		.cfi_offset 16, -6
+ 1070 0436 1F93      		push r17
+ 1071               	.LCFI34:
+ 1072               		.cfi_def_cfa_offset 8
+ 1073               		.cfi_offset 17, -7
+ 1074 0438 CF93      		push r28
+ 1075               	.LCFI35:
+ 1076               		.cfi_def_cfa_offset 9
+ 1077               		.cfi_offset 28, -8
+ 1078 043a DF93      		push r29
+ 1079               	.LCFI36:
+ 1080               		.cfi_def_cfa_offset 10
+ 1081               		.cfi_offset 29, -9
+ 1082               	/* prologue: function */
+ 1083               	/* frame size = 0 */
+ 1084               	/* stack size = 8 */
+ 1085               	.L__stack_usage = 8
+ 1086 043c EB01      		movw r28,r22
+ 1087 043e 6901      		movw r12,r18
+ 1088 0440 7A01      		movw r14,r20
+ 437:FatFs/mmc_avr.c **** 	if (pdrv || !count) return RES_PARERR;
+ 1089               		.loc 1 437 0
+ 1090 0442 8111      		cpse r24,__zero_reg__
+ 1091 0444 00C0      		rjmp .L136
+ 1092               		.loc 1 437 0 is_stmt 0 discriminator 2
+ 1093 0446 0115      		cp r16,__zero_reg__
+ 1094 0448 1105      		cpc r17,__zero_reg__
+ 1095 044a 01F4      		brne .+2
+ 1096 044c 00C0      		rjmp .L136
+ 438:FatFs/mmc_avr.c **** 	if (Stat & STA_NOINIT) return RES_NOTRDY;
+ 1097               		.loc 1 438 0 is_stmt 1
+ 1098 044e 8091 0000 		lds r24,Stat
+ 1099               	.LVL113:
+ 1100 0452 80FD      		sbrc r24,0
+ 1101 0454 00C0      		rjmp .L137
+ 439:FatFs/mmc_avr.c **** 	if (Stat & STA_PROTECT) return RES_WRPRT;
+ 1102               		.loc 1 439 0
+ 1103 0456 8091 0000 		lds r24,Stat
+ 1104 045a 82FD      		sbrc r24,2
+ 1105 045c 00C0      		rjmp .L138
+ 440:FatFs/mmc_avr.c **** 
+ 441:FatFs/mmc_avr.c **** 	if (!(CardType & CT_BLOCK)) sector *= 512;	/* Convert to byte address if needed */
+ 1106               		.loc 1 441 0
+ 1107 045e 8091 0000 		lds r24,CardType
+ 1108 0462 83FD      		sbrc r24,3
+ 1109 0464 00C0      		rjmp .L126
+ 1110               		.loc 1 441 0 is_stmt 0 discriminator 1
+ 1111 0466 99E0      		ldi r25,9
+ 1112               		1:
+ 1113 0468 CC0C      		lsl r12
+ 1114 046a DD1C      		rol r13
+ 1115 046c EE1C      		rol r14
+ 1116 046e FF1C      		rol r15
+ 1117 0470 9A95      		dec r25
+ 1118 0472 01F4      		brne 1b
+ 1119               	.LVL114:
+ 1120               	.L126:
+ 442:FatFs/mmc_avr.c **** 
+ 443:FatFs/mmc_avr.c **** 	if (count == 1) {	/* Single block write */
+ 1121               		.loc 1 443 0 is_stmt 1
+ 1122 0474 0130      		cpi r16,1
+ 1123 0476 1105      		cpc r17,__zero_reg__
+ 1124 0478 01F4      		brne .L127
+ 444:FatFs/mmc_avr.c **** 		if ((send_cmd(CMD24, sector) == 0)	/* WRITE_BLOCK */
+ 1125               		.loc 1 444 0
+ 1126 047a B701      		movw r22,r14
+ 1127 047c A601      		movw r20,r12
+ 1128 047e 88E1      		ldi r24,lo8(24)
+ 1129 0480 0E94 0000 		call send_cmd
+ 1130               	.LVL115:
+ 1131 0484 8111      		cpse r24,__zero_reg__
+ 1132 0486 00C0      		rjmp .L128
+ 445:FatFs/mmc_avr.c **** 			&& xmit_datablock(buff, 0xFE))
+ 1133               		.loc 1 445 0
+ 1134 0488 6EEF      		ldi r22,lo8(-2)
+ 1135 048a CE01      		movw r24,r28
+ 1136 048c 0E94 0000 		call xmit_datablock
+ 1137               	.LVL116:
+ 1138 0490 31E0      		ldi r19,lo8(1)
+ 1139 0492 20E0      		ldi r18,0
+ 1140 0494 892B      		or r24,r25
+ 1141 0496 01F0      		breq .L129
+ 1142 0498 30E0      		ldi r19,0
+ 1143               	.L129:
+ 1144 049a 032F      		mov r16,r19
+ 1145               	.LVL117:
+ 1146 049c 122F      		mov r17,r18
+ 1147 049e 00C0      		rjmp .L130
+ 1148               	.LVL118:
+ 1149               	.L127:
+ 446:FatFs/mmc_avr.c **** 			count = 0;
+ 447:FatFs/mmc_avr.c **** 	}
+ 448:FatFs/mmc_avr.c **** 	else {				/* Multiple block write */
+ 449:FatFs/mmc_avr.c **** 		if (CardType & CT_SDC) send_cmd(ACMD23, count);
+ 1150               		.loc 1 449 0
+ 1151 04a0 8670      		andi r24,lo8(6)
+ 1152 04a2 01F0      		breq .L131
+ 1153               		.loc 1 449 0 is_stmt 0 discriminator 1
+ 1154 04a4 A801      		movw r20,r16
+ 1155 04a6 60E0      		ldi r22,0
+ 1156 04a8 70E0      		ldi r23,0
+ 1157               	.LVL119:
+ 1158 04aa 87E9      		ldi r24,lo8(-105)
+ 1159 04ac 0E94 0000 		call send_cmd
+ 1160               	.LVL120:
+ 1161               	.L131:
+ 450:FatFs/mmc_avr.c **** 		if (send_cmd(CMD25, sector) == 0) {	/* WRITE_MULTIPLE_BLOCK */
+ 1162               		.loc 1 450 0 is_stmt 1
+ 1163 04b0 B701      		movw r22,r14
+ 1164 04b2 A601      		movw r20,r12
+ 1165 04b4 89E1      		ldi r24,lo8(25)
+ 1166 04b6 0E94 0000 		call send_cmd
+ 1167               	.LVL121:
+ 1168 04ba 8111      		cpse r24,__zero_reg__
+ 1169 04bc 00C0      		rjmp .L130
+ 1170               	.L133:
+ 451:FatFs/mmc_avr.c **** 			do {
+ 452:FatFs/mmc_avr.c **** 				if (!xmit_datablock(buff, 0xFC)) break;
+ 1171               		.loc 1 452 0
+ 1172 04be 6CEF      		ldi r22,lo8(-4)
+ 1173 04c0 CE01      		movw r24,r28
+ 1174 04c2 0E94 0000 		call xmit_datablock
+ 1175               	.LVL122:
+ 1176 04c6 892B      		or r24,r25
+ 1177 04c8 01F0      		breq .L132
+ 453:FatFs/mmc_avr.c **** 				buff += 512;
+ 1178               		.loc 1 453 0
+ 1179 04ca DE5F      		subi r29,-2
+ 1180               	.LVL123:
+ 454:FatFs/mmc_avr.c **** 			} while (--count);
+ 1181               		.loc 1 454 0
+ 1182 04cc 0150      		subi r16,1
+ 1183 04ce 1109      		sbc r17,__zero_reg__
+ 1184               	.LVL124:
+ 1185 04d0 01F4      		brne .L133
+ 1186               	.L132:
+ 455:FatFs/mmc_avr.c **** 			if (!xmit_datablock(0, 0xFD))	/* STOP_TRAN token */
+ 1187               		.loc 1 455 0
+ 1188 04d2 6DEF      		ldi r22,lo8(-3)
+ 1189 04d4 80E0      		ldi r24,0
+ 1190 04d6 90E0      		ldi r25,0
+ 1191 04d8 0E94 0000 		call xmit_datablock
+ 1192               	.LVL125:
+ 1193 04dc 892B      		or r24,r25
+ 1194 04de 01F4      		brne .L130
+ 1195               	.L128:
+ 1196               	.LVL126:
+ 456:FatFs/mmc_avr.c **** 				count = 1;
+ 1197               		.loc 1 456 0
+ 1198 04e0 01E0      		ldi r16,lo8(1)
+ 1199 04e2 10E0      		ldi r17,0
+ 1200               	.LVL127:
+ 1201               	.L130:
+ 457:FatFs/mmc_avr.c **** 		}
+ 458:FatFs/mmc_avr.c **** 	}
+ 459:FatFs/mmc_avr.c **** 	deselect();
+ 1202               		.loc 1 459 0
+ 1203 04e4 0E94 0000 		call deselect
+ 1204               	.LVL128:
+ 460:FatFs/mmc_avr.c **** 
+ 461:FatFs/mmc_avr.c **** 	return count ? RES_ERROR : RES_OK;
+ 1205               		.loc 1 461 0
+ 1206 04e8 81E0      		ldi r24,lo8(1)
+ 1207 04ea 012B      		or r16,r17
+ 1208 04ec 01F4      		brne .L125
+ 1209 04ee 80E0      		ldi r24,0
+ 1210 04f0 00C0      		rjmp .L125
+ 1211               	.LVL129:
+ 1212               	.L136:
+ 437:FatFs/mmc_avr.c **** 	if (Stat & STA_NOINIT) return RES_NOTRDY;
+ 1213               		.loc 1 437 0
+ 1214 04f2 84E0      		ldi r24,lo8(4)
+ 1215               	.LVL130:
+ 1216 04f4 00C0      		rjmp .L125
+ 1217               	.L137:
+ 438:FatFs/mmc_avr.c **** 	if (Stat & STA_PROTECT) return RES_WRPRT;
+ 1218               		.loc 1 438 0
+ 1219 04f6 83E0      		ldi r24,lo8(3)
+ 1220 04f8 00C0      		rjmp .L125
+ 1221               	.L138:
+ 439:FatFs/mmc_avr.c **** 
+ 1222               		.loc 1 439 0
+ 1223 04fa 82E0      		ldi r24,lo8(2)
+ 1224               	.LVL131:
+ 1225               	.L125:
+ 1226               	/* epilogue start */
+ 462:FatFs/mmc_avr.c **** }
+ 1227               		.loc 1 462 0
+ 1228 04fc DF91      		pop r29
+ 1229 04fe CF91      		pop r28
+ 1230               	.LVL132:
+ 1231 0500 1F91      		pop r17
+ 1232 0502 0F91      		pop r16
+ 1233               	.LVL133:
+ 1234 0504 FF90      		pop r15
+ 1235 0506 EF90      		pop r14
+ 1236 0508 DF90      		pop r13
+ 1237 050a CF90      		pop r12
+ 1238               	.LVL134:
+ 1239 050c 0895      		ret
+ 1240               		.cfi_endproc
+ 1241               	.LFE14:
+ 1243               	.global	disk_ioctl
+ 1245               	disk_ioctl:
+ 1246               	.LFB15:
+ 463:FatFs/mmc_avr.c **** #endif
+ 464:FatFs/mmc_avr.c **** 
+ 465:FatFs/mmc_avr.c **** 
+ 466:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 467:FatFs/mmc_avr.c **** /* Miscellaneous Functions                                               */
+ 468:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 469:FatFs/mmc_avr.c **** 
+ 470:FatFs/mmc_avr.c **** #if _USE_IOCTL
+ 471:FatFs/mmc_avr.c **** DRESULT disk_ioctl (
+ 472:FatFs/mmc_avr.c **** 	BYTE pdrv,		/* Physical drive number (0) */
+ 473:FatFs/mmc_avr.c **** 	BYTE cmd,		/* Control code */
+ 474:FatFs/mmc_avr.c **** 	void *buff		/* Buffer to send/receive control data */
+ 475:FatFs/mmc_avr.c **** )
+ 476:FatFs/mmc_avr.c **** {
+ 1247               		.loc 1 476 0
+ 1248               		.cfi_startproc
+ 1249               	.LVL135:
+ 1250 050e EF92      		push r14
+ 1251               	.LCFI37:
+ 1252               		.cfi_def_cfa_offset 3
+ 1253               		.cfi_offset 14, -2
+ 1254 0510 FF92      		push r15
+ 1255               	.LCFI38:
+ 1256               		.cfi_def_cfa_offset 4
+ 1257               		.cfi_offset 15, -3
+ 1258 0512 0F93      		push r16
+ 1259               	.LCFI39:
+ 1260               		.cfi_def_cfa_offset 5
+ 1261               		.cfi_offset 16, -4
+ 1262 0514 1F93      		push r17
+ 1263               	.LCFI40:
+ 1264               		.cfi_def_cfa_offset 6
+ 1265               		.cfi_offset 17, -5
+ 1266 0516 CF93      		push r28
+ 1267               	.LCFI41:
+ 1268               		.cfi_def_cfa_offset 7
+ 1269               		.cfi_offset 28, -6
+ 1270 0518 DF93      		push r29
+ 1271               	.LCFI42:
+ 1272               		.cfi_def_cfa_offset 8
+ 1273               		.cfi_offset 29, -7
+ 1274 051a CDB7      		in r28,__SP_L__
+ 1275 051c DEB7      		in r29,__SP_H__
+ 1276               	.LCFI43:
+ 1277               		.cfi_def_cfa_register 28
+ 1278 051e 6097      		sbiw r28,16
+ 1279               	.LCFI44:
+ 1280               		.cfi_def_cfa_offset 24
+ 1281 0520 0FB6      		in __tmp_reg__,__SREG__
+ 1282 0522 F894      		cli
+ 1283 0524 DEBF      		out __SP_H__,r29
+ 1284 0526 0FBE      		out __SREG__,__tmp_reg__
+ 1285 0528 CDBF      		out __SP_L__,r28
+ 1286               	/* prologue: function */
+ 1287               	/* frame size = 16 */
+ 1288               	/* stack size = 22 */
+ 1289               	.L__stack_usage = 22
+ 1290               	.LVL136:
+ 477:FatFs/mmc_avr.c **** 	DRESULT res;
+ 478:FatFs/mmc_avr.c **** 	BYTE n, csd[16], *ptr = buff;
+ 479:FatFs/mmc_avr.c **** 	DWORD csize;
+ 480:FatFs/mmc_avr.c **** 
+ 481:FatFs/mmc_avr.c **** 
+ 482:FatFs/mmc_avr.c **** 	if (pdrv) return RES_PARERR;
+ 1291               		.loc 1 482 0
+ 1292 052a 8111      		cpse r24,__zero_reg__
+ 1293 052c 00C0      		rjmp .L172
+ 1294               	.LVL137:
+ 483:FatFs/mmc_avr.c **** 
+ 484:FatFs/mmc_avr.c **** 	res = RES_ERROR;
+ 485:FatFs/mmc_avr.c **** 
+ 486:FatFs/mmc_avr.c **** 	if (Stat & STA_NOINIT) return RES_NOTRDY;
+ 1295               		.loc 1 486 0
+ 1296 052e 8091 0000 		lds r24,Stat
+ 1297               	.LVL138:
+ 1298 0532 80FD      		sbrc r24,0
+ 1299 0534 00C0      		rjmp .L173
+ 1300 0536 8A01      		movw r16,r20
+ 487:FatFs/mmc_avr.c **** 
+ 488:FatFs/mmc_avr.c **** 	switch (cmd) {
+ 1301               		.loc 1 488 0
+ 1302 0538 862F      		mov r24,r22
+ 1303 053a 90E0      		ldi r25,0
+ 1304 053c 8F30      		cpi r24,15
+ 1305 053e 9105      		cpc r25,__zero_reg__
+ 1306 0540 00F0      		brlo .+2
+ 1307 0542 00C0      		rjmp .L174
+ 1308 0544 FC01      		movw r30,r24
+ 1309 0546 E050      		subi r30,lo8(-(gs(.L153)))
+ 1310 0548 F040      		sbci r31,hi8(-(gs(.L153)))
+ 1311 054a 0C94 0000 		jmp __tablejump2__
+ 1312               	.LVL139:
+ 1313               		.section	.progmem.gcc_sw_table,"a",@progbits
+ 1314               		.p2align	1
+ 1315               	.L153:
+ 1316 0000 0000      		.word gs(.L152)
+ 1317 0002 0000      		.word gs(.L154)
+ 1318 0004 0000      		.word gs(.L174)
+ 1319 0006 0000      		.word gs(.L155)
+ 1320 0008 0000      		.word gs(.L174)
+ 1321 000a 0000      		.word gs(.L174)
+ 1322 000c 0000      		.word gs(.L174)
+ 1323 000e 0000      		.word gs(.L174)
+ 1324 0010 0000      		.word gs(.L174)
+ 1325 0012 0000      		.word gs(.L174)
+ 1326 0014 0000      		.word gs(.L156)
+ 1327 0016 0000      		.word gs(.L157)
+ 1328 0018 0000      		.word gs(.L158)
+ 1329 001a 0000      		.word gs(.L159)
+ 1330 001c 0000      		.word gs(.L160)
+ 1331               		.text
+ 1332               	.L152:
+ 489:FatFs/mmc_avr.c **** 	case CTRL_SYNC :		/* Make sure that no pending write process. Do not remove this or written sector
+ 490:FatFs/mmc_avr.c **** 		if (select()) res = RES_OK;
+ 1333               		.loc 1 490 0
+ 1334 054e 0E94 0000 		call select
+ 1335               	.LVL140:
+ 1336 0552 00C0      		rjmp .L201
+ 1337               	.L154:
+ 491:FatFs/mmc_avr.c **** 		break;
+ 492:FatFs/mmc_avr.c **** 
+ 493:FatFs/mmc_avr.c **** 	case GET_SECTOR_COUNT :	/* Get number of sectors on the disk (DWORD) */
+ 494:FatFs/mmc_avr.c **** 		if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16)) {
+ 1338               		.loc 1 494 0
+ 1339 0554 40E0      		ldi r20,0
+ 1340 0556 50E0      		ldi r21,0
+ 1341 0558 BA01      		movw r22,r20
+ 1342 055a 89E0      		ldi r24,lo8(9)
+ 1343 055c 0E94 0000 		call send_cmd
+ 1344               	.LVL141:
+ 1345 0560 8823      		tst r24
+ 1346 0562 01F0      		breq .L162
+ 1347               	.L163:
+ 484:FatFs/mmc_avr.c **** 
+ 1348               		.loc 1 484 0
+ 1349 0564 11E0      		ldi r17,lo8(1)
+ 1350 0566 00C0      		rjmp .L151
+ 1351               	.L162:
+ 1352               		.loc 1 494 0 discriminator 1
+ 1353 0568 60E1      		ldi r22,lo8(16)
+ 1354 056a 70E0      		ldi r23,0
+ 1355 056c CE01      		movw r24,r28
+ 1356 056e 0196      		adiw r24,1
+ 1357 0570 0E94 0000 		call rcvr_datablock
+ 1358               	.LVL142:
+ 1359 0574 892B      		or r24,r25
+ 1360 0576 01F0      		breq .L163
+ 495:FatFs/mmc_avr.c **** 			if ((csd[0] >> 6) == 1) {	/* SDC ver 2.00 */
+ 1361               		.loc 1 495 0
+ 1362 0578 9981      		ldd r25,Y+1
+ 1363 057a 9295      		swap r25
+ 1364 057c 9695      		lsr r25
+ 1365 057e 9695      		lsr r25
+ 1366 0580 9370      		andi r25,lo8(3)
+ 1367 0582 2985      		ldd r18,Y+9
+ 1368 0584 4A85      		ldd r20,Y+10
+ 1369 0586 8885      		ldd r24,Y+8
+ 1370 0588 9130      		cpi r25,lo8(1)
+ 1371 058a 01F4      		brne .L164
+ 1372               	.LVL143:
+ 496:FatFs/mmc_avr.c **** 				csize = csd[9] + ((WORD)csd[8] << 8) + ((DWORD)(csd[7] & 63) << 16) + 1;
+ 497:FatFs/mmc_avr.c **** 				*(DWORD*)buff = csize << 10;
+ 1373               		.loc 1 497 0
+ 1374 058c 30E0      		ldi r19,0
+ 1375 058e 322F      		mov r19,r18
+ 1376 0590 2227      		clr r18
+ 1377 0592 240F      		add r18,r20
+ 1378 0594 311D      		adc r19,__zero_reg__
+ 1379 0596 8F73      		andi r24,lo8(63)
+ 1380 0598 90E0      		ldi r25,0
+ 1381 059a A0E0      		ldi r26,0
+ 1382 059c B0E0      		ldi r27,0
+ 1383 059e DC01      		movw r26,r24
+ 1384 05a0 9927      		clr r25
+ 1385 05a2 8827      		clr r24
+ 1386 05a4 0196      		adiw r24,1
+ 1387 05a6 A11D      		adc r26,__zero_reg__
+ 1388 05a8 B11D      		adc r27,__zero_reg__
+ 1389 05aa 820F      		add r24,r18
+ 1390 05ac 931F      		adc r25,r19
+ 1391 05ae A11D      		adc r26,__zero_reg__
+ 1392 05b0 B11D      		adc r27,__zero_reg__
+ 1393 05b2 FAE0      		ldi r31,10
+ 1394               		1:
+ 1395 05b4 880F      		lsl r24
+ 1396 05b6 991F      		rol r25
+ 1397 05b8 AA1F      		rol r26
+ 1398 05ba BB1F      		rol r27
+ 1399 05bc FA95      		dec r31
+ 1400 05be 01F4      		brne 1b
+ 1401 05c0 00C0      		rjmp .L198
+ 1402               	.L164:
+ 1403               	.LVL144:
+ 498:FatFs/mmc_avr.c **** 			} else {					/* SDC ver 1.XX or MMC*/
+ 499:FatFs/mmc_avr.c **** 				n = (csd[5] & 15) + ((csd[10] & 128) >> 7) + ((csd[9] & 3) << 1) + 2;
+ 500:FatFs/mmc_avr.c **** 				csize = (csd[8] >> 6) + ((WORD)csd[7] << 2) + ((WORD)(csd[6] & 3) << 10) + 1;
+ 501:FatFs/mmc_avr.c **** 				*(DWORD*)buff = csize << (n - 9);
+ 1404               		.loc 1 501 0
+ 1405 05c2 2295      		swap r18
+ 1406 05c4 2695      		lsr r18
+ 1407 05c6 2695      		lsr r18
+ 1408 05c8 2370      		andi r18,lo8(3)
+ 1409 05ca F4E0      		ldi r31,lo8(4)
+ 1410 05cc 8F9F      		mul r24,r31
+ 1411 05ce C001      		movw r24,r0
+ 1412 05d0 1124      		clr __zero_reg__
+ 1413 05d2 820F      		add r24,r18
+ 1414 05d4 911D      		adc r25,__zero_reg__
+ 1415 05d6 0196      		adiw r24,1
+ 1416 05d8 2F81      		ldd r18,Y+7
+ 1417 05da 2370      		andi r18,lo8(3)
+ 1418 05dc 30E0      		ldi r19,0
+ 1419 05de 322F      		mov r19,r18
+ 1420 05e0 2227      		clr r18
+ 1421 05e2 330F      		lsl r19
+ 1422 05e4 330F      		lsl r19
+ 1423 05e6 820F      		add r24,r18
+ 1424 05e8 931F      		adc r25,r19
+ 1425 05ea A0E0      		ldi r26,0
+ 1426 05ec B0E0      		ldi r27,0
+ 1427 05ee 2E81      		ldd r18,Y+6
+ 1428 05f0 322F      		mov r19,r18
+ 1429 05f2 3F70      		andi r19,lo8(15)
+ 1430 05f4 2B85      		ldd r18,Y+11
+ 1431 05f6 221F      		rol r18
+ 1432 05f8 2227      		clr r18
+ 1433 05fa 221F      		rol r18
+ 1434 05fc 230F      		add r18,r19
+ 1435 05fe 4370      		andi r20,lo8(3)
+ 1436 0600 440F      		lsl r20
+ 1437 0602 420F      		add r20,r18
+ 1438 0604 4750      		subi r20,lo8(-(-7))
+ 1439 0606 00C0      		rjmp 2f
+ 1440               		1:
+ 1441 0608 880F      		lsl r24
+ 1442 060a 991F      		rol r25
+ 1443 060c AA1F      		rol r26
+ 1444 060e BB1F      		rol r27
+ 1445               		2:
+ 1446 0610 4A95      		dec r20
+ 1447 0612 02F4      		brpl 1b
+ 1448 0614 00C0      		rjmp .L198
+ 1449               	.LVL145:
+ 1450               	.L155:
+ 502:FatFs/mmc_avr.c **** 			}
+ 503:FatFs/mmc_avr.c **** 			res = RES_OK;
+ 504:FatFs/mmc_avr.c **** 		}
+ 505:FatFs/mmc_avr.c **** 		break;
+ 506:FatFs/mmc_avr.c **** 
+ 507:FatFs/mmc_avr.c **** 	case GET_BLOCK_SIZE :	/* Get erase block size in unit of sector (DWORD) */
+ 508:FatFs/mmc_avr.c **** 		if (CardType & CT_SD2) {	/* SDv2? */
+ 1451               		.loc 1 508 0
+ 1452 0616 F090 0000 		lds r15,CardType
+ 509:FatFs/mmc_avr.c **** 			if (send_cmd(ACMD13, 0) == 0) {	/* Read SD status */
+ 1453               		.loc 1 509 0
+ 1454 061a 40E0      		ldi r20,0
+ 1455 061c 50E0      		ldi r21,0
+ 1456 061e BA01      		movw r22,r20
+ 508:FatFs/mmc_avr.c **** 			if (send_cmd(ACMD13, 0) == 0) {	/* Read SD status */
+ 1457               		.loc 1 508 0
+ 1458 0620 F2FE      		sbrs r15,2
+ 1459 0622 00C0      		rjmp .L165
+ 1460               		.loc 1 509 0
+ 1461 0624 8DE8      		ldi r24,lo8(-115)
+ 1462 0626 0E94 0000 		call send_cmd
+ 1463               	.LVL146:
+ 1464 062a 8111      		cpse r24,__zero_reg__
+ 1465 062c 00C0      		rjmp .L163
+ 510:FatFs/mmc_avr.c **** 				xchg_spi(0xFF);
+ 1466               		.loc 1 510 0
+ 1467 062e 8FEF      		ldi r24,lo8(-1)
+ 1468 0630 0E94 0000 		call xchg_spi
+ 1469               	.LVL147:
+ 511:FatFs/mmc_avr.c **** 				if (rcvr_datablock(csd, 16)) {				/* Read partial block */
+ 1470               		.loc 1 511 0
+ 1471 0634 60E1      		ldi r22,lo8(16)
+ 1472 0636 70E0      		ldi r23,0
+ 1473 0638 CE01      		movw r24,r28
+ 1474 063a 0196      		adiw r24,1
+ 1475 063c 0E94 0000 		call rcvr_datablock
+ 1476               	.LVL148:
+ 1477 0640 892B      		or r24,r25
+ 1478 0642 01F4      		brne .+2
+ 1479 0644 00C0      		rjmp .L163
+ 1480 0646 50E3      		ldi r21,lo8(48)
+ 1481 0648 F52E      		mov r15,r21
+ 1482               	.L166:
+ 1483               	.LVL149:
+ 512:FatFs/mmc_avr.c **** 					for (n = 64 - 16; n; n--) xchg_spi(0xFF);	/* Purge trailing data */
+ 1484               		.loc 1 512 0 discriminator 3
+ 1485 064a 8FEF      		ldi r24,lo8(-1)
+ 1486 064c 0E94 0000 		call xchg_spi
+ 1487               	.LVL150:
+ 1488 0650 FA94      		dec r15
+ 1489               	.LVL151:
+ 1490 0652 F110      		cpse r15,__zero_reg__
+ 1491 0654 00C0      		rjmp .L166
+ 513:FatFs/mmc_avr.c **** 					*(DWORD*)buff = 16UL << (csd[10] >> 4);
+ 1492               		.loc 1 513 0
+ 1493 0656 2B85      		ldd r18,Y+11
+ 1494 0658 2295      		swap r18
+ 1495 065a 2F70      		andi r18,lo8(15)
+ 1496 065c 80E1      		ldi r24,lo8(16)
+ 1497 065e 90E0      		ldi r25,0
+ 1498 0660 A0E0      		ldi r26,0
+ 1499 0662 B0E0      		ldi r27,0
+ 1500 0664 00C0      		rjmp 2f
+ 1501               		1:
+ 1502 0666 880F      		lsl r24
+ 1503 0668 991F      		rol r25
+ 1504 066a AA1F      		rol r26
+ 1505 066c BB1F      		rol r27
+ 1506               		2:
+ 1507 066e 2A95      		dec r18
+ 1508 0670 02F4      		brpl 1b
+ 1509               	.LVL152:
+ 1510               	.L198:
+ 1511 0672 F801      		movw r30,r16
+ 1512 0674 8083      		st Z,r24
+ 1513 0676 9183      		std Z+1,r25
+ 1514 0678 A283      		std Z+2,r26
+ 1515 067a B383      		std Z+3,r27
+ 1516               	.LVL153:
+ 1517               	.L199:
+ 514:FatFs/mmc_avr.c **** 					res = RES_OK;
+ 1518               		.loc 1 514 0
+ 1519 067c 10E0      		ldi r17,0
+ 1520 067e 00C0      		rjmp .L151
+ 1521               	.LVL154:
+ 1522               	.L165:
+ 515:FatFs/mmc_avr.c **** 				}
+ 516:FatFs/mmc_avr.c **** 			}
+ 517:FatFs/mmc_avr.c **** 		} else {					/* SDv1 or MMCv3 */
+ 518:FatFs/mmc_avr.c **** 			if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16)) {	/* Read CSD */
+ 1523               		.loc 1 518 0
+ 1524 0680 89E0      		ldi r24,lo8(9)
+ 1525 0682 0E94 0000 		call send_cmd
+ 1526               	.LVL155:
+ 1527 0686 8111      		cpse r24,__zero_reg__
+ 1528 0688 00C0      		rjmp .L163
+ 1529               		.loc 1 518 0 is_stmt 0 discriminator 1
+ 1530 068a 60E1      		ldi r22,lo8(16)
+ 1531 068c 70E0      		ldi r23,0
+ 1532 068e CE01      		movw r24,r28
+ 1533 0690 0196      		adiw r24,1
+ 1534 0692 0E94 0000 		call rcvr_datablock
+ 1535               	.LVL156:
+ 1536 0696 892B      		or r24,r25
+ 1537 0698 01F4      		brne .+2
+ 1538 069a 00C0      		rjmp .L163
+ 1539 069c 2B85      		ldd r18,Y+11
+ 1540 069e 8C85      		ldd r24,Y+12
+ 519:FatFs/mmc_avr.c **** 				if (CardType & CT_SD1) {	/* SDv1 */
+ 1541               		.loc 1 519 0 is_stmt 1
+ 1542 06a0 F1FE      		sbrs r15,1
+ 1543 06a2 00C0      		rjmp .L167
+ 520:FatFs/mmc_avr.c **** 					*(DWORD*)buff = (((csd[10] & 63) << 1) + ((WORD)(csd[11] & 128) >> 7) + 1) << ((csd[13] >> 6) 
+ 1544               		.loc 1 520 0
+ 1545 06a4 881F      		rol r24
+ 1546 06a6 8827      		clr r24
+ 1547 06a8 881F      		rol r24
+ 1548 06aa 90E0      		ldi r25,0
+ 1549 06ac 0196      		adiw r24,1
+ 1550 06ae 2F73      		andi r18,lo8(63)
+ 1551 06b0 820F      		add r24,r18
+ 1552 06b2 911D      		adc r25,__zero_reg__
+ 1553 06b4 820F      		add r24,r18
+ 1554 06b6 911D      		adc r25,__zero_reg__
+ 1555 06b8 2E85      		ldd r18,Y+14
+ 1556 06ba 2295      		swap r18
+ 1557 06bc 2695      		lsr r18
+ 1558 06be 2695      		lsr r18
+ 1559 06c0 2370      		andi r18,lo8(3)
+ 1560 06c2 2150      		subi r18,lo8(-(-1))
+ 1561 06c4 00C0      		rjmp 2f
+ 1562               		1:
+ 1563 06c6 880F      		lsl r24
+ 1564 06c8 991F      		rol r25
+ 1565               		2:
+ 1566 06ca 2A95      		dec r18
+ 1567 06cc 02F4      		brpl 1b
+ 1568 06ce 00C0      		rjmp .L202
+ 1569               	.L167:
+ 521:FatFs/mmc_avr.c **** 				} else {					/* MMCv3 */
+ 522:FatFs/mmc_avr.c **** 					*(DWORD*)buff = ((WORD)((csd[10] & 124) >> 2) + 1) * (((csd[11] & 3) << 3) + ((csd[11] & 224) 
+ 1570               		.loc 1 522 0
+ 1571 06d0 382F      		mov r19,r24
+ 1572 06d2 3370      		andi r19,lo8(3)
+ 1573 06d4 8295      		swap r24
+ 1574 06d6 8695      		lsr r24
+ 1575 06d8 8770      		andi r24,lo8(7)
+ 1576 06da 90E0      		ldi r25,0
+ 1577 06dc F8E0      		ldi r31,lo8(8)
+ 1578 06de 3F9F      		mul r19,r31
+ 1579 06e0 800D      		add r24,r0
+ 1580 06e2 911D      		adc r25,r1
+ 1581 06e4 1124      		clr __zero_reg__
+ 1582 06e6 0196      		adiw r24,1
+ 1583 06e8 2C77      		andi r18,lo8(124)
+ 1584 06ea 30E0      		ldi r19,0
+ 1585 06ec 3595      		asr r19
+ 1586 06ee 2795      		ror r18
+ 1587 06f0 3595      		asr r19
+ 1588 06f2 2795      		ror r18
+ 1589 06f4 2F5F      		subi r18,-1
+ 1590 06f6 3F4F      		sbci r19,-1
+ 1591 06f8 829F      		mul r24,r18
+ 1592 06fa A001      		movw r20,r0
+ 1593 06fc 839F      		mul r24,r19
+ 1594 06fe 500D      		add r21,r0
+ 1595 0700 929F      		mul r25,r18
+ 1596 0702 500D      		add r21,r0
+ 1597 0704 1124      		clr r1
+ 1598 0706 CA01      		movw r24,r20
+ 1599               	.L202:
+ 1600 0708 A0E0      		ldi r26,0
+ 1601 070a B0E0      		ldi r27,0
+ 1602 070c 00C0      		rjmp .L198
+ 1603               	.L156:
+ 523:FatFs/mmc_avr.c **** 				}
+ 524:FatFs/mmc_avr.c **** 				res = RES_OK;
+ 525:FatFs/mmc_avr.c **** 			}
+ 526:FatFs/mmc_avr.c **** 		}
+ 527:FatFs/mmc_avr.c **** 		break;
+ 528:FatFs/mmc_avr.c **** 
+ 529:FatFs/mmc_avr.c **** 	/* Following commands are never used by FatFs module */
+ 530:FatFs/mmc_avr.c **** 
+ 531:FatFs/mmc_avr.c **** 	case MMC_GET_TYPE :		/* Get card type flags (1 byte) */
+ 532:FatFs/mmc_avr.c **** 		*ptr = CardType;
+ 1604               		.loc 1 532 0
+ 1605 070e 8091 0000 		lds r24,CardType
+ 1606 0712 FA01      		movw r30,r20
+ 1607 0714 8083      		st Z,r24
+ 1608               	.LVL157:
+ 1609 0716 00C0      		rjmp .L199
+ 1610               	.LVL158:
+ 1611               	.L157:
+ 533:FatFs/mmc_avr.c **** 		res = RES_OK;
+ 534:FatFs/mmc_avr.c **** 		break;
+ 535:FatFs/mmc_avr.c **** 
+ 536:FatFs/mmc_avr.c **** 	case MMC_GET_CSD :		/* Receive CSD as a data block (16 bytes) */
+ 537:FatFs/mmc_avr.c **** 		if (send_cmd(CMD9, 0) == 0		/* READ_CSD */
+ 1612               		.loc 1 537 0
+ 1613 0718 40E0      		ldi r20,0
+ 1614 071a 50E0      		ldi r21,0
+ 1615 071c BA01      		movw r22,r20
+ 1616 071e 89E0      		ldi r24,lo8(9)
+ 1617 0720 00C0      		rjmp .L205
+ 1618               	.L158:
+ 538:FatFs/mmc_avr.c **** 			&& rcvr_datablock(ptr, 16))
+ 539:FatFs/mmc_avr.c **** 			res = RES_OK;
+ 540:FatFs/mmc_avr.c **** 		break;
+ 541:FatFs/mmc_avr.c **** 
+ 542:FatFs/mmc_avr.c **** 	case MMC_GET_CID :		/* Receive CID as a data block (16 bytes) */
+ 543:FatFs/mmc_avr.c **** 		if (send_cmd(CMD10, 0) == 0		/* READ_CID */
+ 1619               		.loc 1 543 0
+ 1620 0722 40E0      		ldi r20,0
+ 1621 0724 50E0      		ldi r21,0
+ 1622 0726 BA01      		movw r22,r20
+ 1623 0728 8AE0      		ldi r24,lo8(10)
+ 1624               	.L205:
+ 1625 072a 0E94 0000 		call send_cmd
+ 1626               	.LVL159:
+ 1627 072e 8111      		cpse r24,__zero_reg__
+ 1628 0730 00C0      		rjmp .L163
+ 544:FatFs/mmc_avr.c **** 			&& rcvr_datablock(ptr, 16))
+ 1629               		.loc 1 544 0
+ 1630 0732 60E1      		ldi r22,lo8(16)
+ 1631 0734 70E0      		ldi r23,0
+ 1632 0736 00C0      		rjmp .L200
+ 1633               	.L159:
+ 545:FatFs/mmc_avr.c **** 			res = RES_OK;
+ 546:FatFs/mmc_avr.c **** 		break;
+ 547:FatFs/mmc_avr.c **** 
+ 548:FatFs/mmc_avr.c **** 	case MMC_GET_OCR :		/* Receive OCR as an R3 resp (4 bytes) */
+ 549:FatFs/mmc_avr.c **** 		if (send_cmd(CMD58, 0) == 0) {	/* READ_OCR */
+ 1634               		.loc 1 549 0
+ 1635 0738 40E0      		ldi r20,0
+ 1636 073a 50E0      		ldi r21,0
+ 1637 073c BA01      		movw r22,r20
+ 1638 073e 8AE3      		ldi r24,lo8(58)
+ 1639 0740 0E94 0000 		call send_cmd
+ 1640               	.LVL160:
+ 1641 0744 8111      		cpse r24,__zero_reg__
+ 1642 0746 00C0      		rjmp .L163
+ 1643 0748 7801      		movw r14,r16
+ 1644 074a F4E0      		ldi r31,4
+ 1645 074c EF0E      		add r14,r31
+ 1646 074e F11C      		adc r15,__zero_reg__
+ 1647               	.LVL161:
+ 1648               	.L170:
+ 550:FatFs/mmc_avr.c **** 			for (n = 4; n; n--) *ptr++ = xchg_spi(0xFF);
+ 1649               		.loc 1 550 0 discriminator 3
+ 1650 0750 8FEF      		ldi r24,lo8(-1)
+ 1651 0752 0E94 0000 		call xchg_spi
+ 1652               	.LVL162:
+ 1653 0756 F801      		movw r30,r16
+ 1654 0758 8193      		st Z+,r24
+ 1655               	.LVL163:
+ 1656 075a 8F01      		movw r16,r30
+ 1657               	.LVL164:
+ 1658 075c EE15      		cp r30,r14
+ 1659 075e FF05      		cpc r31,r15
+ 1660 0760 01F4      		brne .L170
+ 1661 0762 00C0      		rjmp .L199
+ 1662               	.LVL165:
+ 1663               	.L160:
+ 551:FatFs/mmc_avr.c **** 			res = RES_OK;
+ 552:FatFs/mmc_avr.c **** 		}
+ 553:FatFs/mmc_avr.c **** 		break;
+ 554:FatFs/mmc_avr.c **** 
+ 555:FatFs/mmc_avr.c **** 	case MMC_GET_SDSTAT :	/* Receive SD statsu as a data block (64 bytes) */
+ 556:FatFs/mmc_avr.c **** 		if (send_cmd(ACMD13, 0) == 0) {	/* SD_STATUS */
+ 1664               		.loc 1 556 0
+ 1665 0764 40E0      		ldi r20,0
+ 1666 0766 50E0      		ldi r21,0
+ 1667 0768 BA01      		movw r22,r20
+ 1668 076a 8DE8      		ldi r24,lo8(-115)
+ 1669 076c 0E94 0000 		call send_cmd
+ 1670               	.LVL166:
+ 1671 0770 8111      		cpse r24,__zero_reg__
+ 1672 0772 00C0      		rjmp .L163
+ 557:FatFs/mmc_avr.c **** 			xchg_spi(0xFF);
+ 1673               		.loc 1 557 0
+ 1674 0774 8FEF      		ldi r24,lo8(-1)
+ 1675 0776 0E94 0000 		call xchg_spi
+ 1676               	.LVL167:
+ 558:FatFs/mmc_avr.c **** 			if (rcvr_datablock(ptr, 64))
+ 1677               		.loc 1 558 0
+ 1678 077a 60E4      		ldi r22,lo8(64)
+ 1679 077c 70E0      		ldi r23,0
+ 1680               	.L200:
+ 1681 077e C801      		movw r24,r16
+ 1682 0780 0E94 0000 		call rcvr_datablock
+ 1683               	.LVL168:
+ 1684               	.L201:
+ 490:FatFs/mmc_avr.c **** 		break;
+ 1685               		.loc 1 490 0
+ 1686 0784 11E0      		ldi r17,lo8(1)
+ 1687 0786 892B      		or r24,r25
+ 1688 0788 01F0      		breq .L151
+ 1689 078a 00C0      		rjmp .L199
+ 1690               	.L174:
+ 559:FatFs/mmc_avr.c **** 				res = RES_OK;
+ 560:FatFs/mmc_avr.c **** 		}
+ 561:FatFs/mmc_avr.c **** 		break;
+ 562:FatFs/mmc_avr.c **** /*
+ 563:FatFs/mmc_avr.c **** 	case CTRL_POWER_OFF :	//Power off 
+ 564:FatFs/mmc_avr.c **** 		power_off();
+ 565:FatFs/mmc_avr.c **** 		Stat |= STA_NOINIT;
+ 566:FatFs/mmc_avr.c **** 		res = RES_OK;
+ 567:FatFs/mmc_avr.c **** 		break;
+ 568:FatFs/mmc_avr.c **** */
+ 569:FatFs/mmc_avr.c **** 	default:
+ 570:FatFs/mmc_avr.c **** 		res = RES_PARERR;
+ 1691               		.loc 1 570 0
+ 1692 078c 14E0      		ldi r17,lo8(4)
+ 1693               	.LVL169:
+ 1694               	.L151:
+ 571:FatFs/mmc_avr.c **** 	}
+ 572:FatFs/mmc_avr.c **** 
+ 573:FatFs/mmc_avr.c **** 	deselect();
+ 1695               		.loc 1 573 0
+ 1696 078e 0E94 0000 		call deselect
+ 1697               	.LVL170:
+ 574:FatFs/mmc_avr.c **** 
+ 575:FatFs/mmc_avr.c **** 	return res;
+ 1698               		.loc 1 575 0
+ 1699 0792 812F      		mov r24,r17
+ 1700 0794 00C0      		rjmp .L150
+ 1701               	.LVL171:
+ 1702               	.L172:
+ 482:FatFs/mmc_avr.c **** 
+ 1703               		.loc 1 482 0
+ 1704 0796 84E0      		ldi r24,lo8(4)
+ 1705               	.LVL172:
+ 1706 0798 00C0      		rjmp .L150
+ 1707               	.LVL173:
+ 1708               	.L173:
+ 486:FatFs/mmc_avr.c **** 
+ 1709               		.loc 1 486 0
+ 1710 079a 83E0      		ldi r24,lo8(3)
+ 1711               	.LVL174:
+ 1712               	.L150:
+ 1713               	/* epilogue start */
+ 576:FatFs/mmc_avr.c **** }
+ 1714               		.loc 1 576 0
+ 1715 079c 6096      		adiw r28,16
+ 1716 079e 0FB6      		in __tmp_reg__,__SREG__
+ 1717 07a0 F894      		cli
+ 1718 07a2 DEBF      		out __SP_H__,r29
+ 1719 07a4 0FBE      		out __SREG__,__tmp_reg__
+ 1720 07a6 CDBF      		out __SP_L__,r28
+ 1721 07a8 DF91      		pop r29
+ 1722 07aa CF91      		pop r28
+ 1723 07ac 1F91      		pop r17
+ 1724 07ae 0F91      		pop r16
+ 1725 07b0 FF90      		pop r15
+ 1726 07b2 EF90      		pop r14
+ 1727 07b4 0895      		ret
+ 1728               		.cfi_endproc
+ 1729               	.LFE15:
+ 1731               	.global	disk_timerproc
+ 1733               	disk_timerproc:
+ 1734               	.LFB16:
+ 577:FatFs/mmc_avr.c **** #endif
+ 578:FatFs/mmc_avr.c **** 
+ 579:FatFs/mmc_avr.c **** 
+ 580:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 581:FatFs/mmc_avr.c **** /* Device Timer Interrupt Procedure                                      */
+ 582:FatFs/mmc_avr.c **** /*-----------------------------------------------------------------------*/
+ 583:FatFs/mmc_avr.c **** 
+ 584:FatFs/mmc_avr.c **** 
+ 585:FatFs/mmc_avr.c **** 
+ 586:FatFs/mmc_avr.c **** /* This function must be called in period of 10ms                        */
+ 587:FatFs/mmc_avr.c **** 
+ 588:FatFs/mmc_avr.c **** void disk_timerproc (void)
+ 589:FatFs/mmc_avr.c **** {
+ 1735               		.loc 1 589 0
+ 1736               		.cfi_startproc
+ 1737               	/* prologue: function */
+ 1738               	/* frame size = 0 */
+ 1739               	/* stack size = 0 */
+ 1740               	.L__stack_usage = 0
+ 590:FatFs/mmc_avr.c **** 	BYTE n, s;
+ 591:FatFs/mmc_avr.c **** 
+ 592:FatFs/mmc_avr.c **** 
+ 593:FatFs/mmc_avr.c **** 	n = Timer1;				/* 100Hz decrement timer */
+ 1741               		.loc 1 593 0
+ 1742 07b6 8091 0000 		lds r24,Timer1
+ 1743               	.LVL175:
+ 594:FatFs/mmc_avr.c **** 	if (n) Timer1 = --n;
+ 1744               		.loc 1 594 0
+ 1745 07ba 8823      		tst r24
+ 1746 07bc 01F0      		breq .L207
+ 1747               		.loc 1 594 0 is_stmt 0 discriminator 1
+ 1748 07be 8150      		subi r24,lo8(-(-1))
+ 1749               	.LVL176:
+ 1750 07c0 8093 0000 		sts Timer1,r24
+ 1751               	.L207:
+ 595:FatFs/mmc_avr.c **** 	n = Timer2;
+ 1752               		.loc 1 595 0 is_stmt 1
+ 1753 07c4 8091 0000 		lds r24,Timer2
+ 1754               	.LVL177:
+ 596:FatFs/mmc_avr.c **** 	if (n) Timer2 = --n;
+ 1755               		.loc 1 596 0
+ 1756 07c8 8823      		tst r24
+ 1757 07ca 01F0      		breq .L208
+ 1758               		.loc 1 596 0 is_stmt 0 discriminator 1
+ 1759 07cc 8150      		subi r24,lo8(-(-1))
+ 1760               	.LVL178:
+ 1761 07ce 8093 0000 		sts Timer2,r24
+ 1762               	.L208:
+ 597:FatFs/mmc_avr.c **** 
+ 598:FatFs/mmc_avr.c **** 	s = Stat;
+ 1763               		.loc 1 598 0 is_stmt 1
+ 1764 07d2 8091 0000 		lds r24,Stat
+ 1765               	.LVL179:
+ 599:FatFs/mmc_avr.c **** 
+ 600:FatFs/mmc_avr.c **** 	if (MMC_WP)				/* Write protected */
+ 601:FatFs/mmc_avr.c **** 		s |= STA_PROTECT;
+ 602:FatFs/mmc_avr.c **** 	else					/* Write enabled */
+ 603:FatFs/mmc_avr.c **** 		s &= ~STA_PROTECT;
+ 604:FatFs/mmc_avr.c **** 
+ 605:FatFs/mmc_avr.c **** 	if (MMC_CD)				/* Card inserted */
+ 606:FatFs/mmc_avr.c **** 		s &= ~STA_NODISK;
+ 1766               		.loc 1 606 0
+ 1767 07d6 897F      		andi r24,lo8(-7)
+ 1768               	.LVL180:
+ 607:FatFs/mmc_avr.c **** 	else					/* Socket empty */
+ 608:FatFs/mmc_avr.c **** 		s |= (STA_NODISK | STA_NOINIT);
+ 609:FatFs/mmc_avr.c **** 
+ 610:FatFs/mmc_avr.c **** 	Stat = s;				/* Update MMC status */
+ 1769               		.loc 1 610 0
+ 1770 07d8 8093 0000 		sts Stat,r24
+ 1771 07dc 0895      		ret
+ 1772               		.cfi_endproc
+ 1773               	.LFE16:
+ 1775               	.global	__vector_4
+ 1777               	__vector_4:
+ 1778               	.LFB17:
+ 611:FatFs/mmc_avr.c **** }
+ 612:FatFs/mmc_avr.c **** 
+ 613:FatFs/mmc_avr.c **** ISR(TIMER2_COMP_vect)
+ 614:FatFs/mmc_avr.c **** {
+ 1779               		.loc 1 614 0
+ 1780               		.cfi_startproc
+ 1781 07de 1F92      		push r1
+ 1782               	.LCFI45:
+ 1783               		.cfi_def_cfa_offset 3
+ 1784               		.cfi_offset 1, -2
+ 1785 07e0 0F92      		push r0
+ 1786               	.LCFI46:
+ 1787               		.cfi_def_cfa_offset 4
+ 1788               		.cfi_offset 0, -3
+ 1789 07e2 0FB6      		in r0,__SREG__
+ 1790 07e4 0F92      		push r0
+ 1791 07e6 1124      		clr __zero_reg__
+ 1792 07e8 2F93      		push r18
+ 1793               	.LCFI47:
+ 1794               		.cfi_def_cfa_offset 5
+ 1795               		.cfi_offset 18, -4
+ 1796 07ea 3F93      		push r19
+ 1797               	.LCFI48:
+ 1798               		.cfi_def_cfa_offset 6
+ 1799               		.cfi_offset 19, -5
+ 1800 07ec 4F93      		push r20
+ 1801               	.LCFI49:
+ 1802               		.cfi_def_cfa_offset 7
+ 1803               		.cfi_offset 20, -6
+ 1804 07ee 5F93      		push r21
+ 1805               	.LCFI50:
+ 1806               		.cfi_def_cfa_offset 8
+ 1807               		.cfi_offset 21, -7
+ 1808 07f0 6F93      		push r22
+ 1809               	.LCFI51:
+ 1810               		.cfi_def_cfa_offset 9
+ 1811               		.cfi_offset 22, -8
+ 1812 07f2 7F93      		push r23
+ 1813               	.LCFI52:
+ 1814               		.cfi_def_cfa_offset 10
+ 1815               		.cfi_offset 23, -9
+ 1816 07f4 8F93      		push r24
+ 1817               	.LCFI53:
+ 1818               		.cfi_def_cfa_offset 11
+ 1819               		.cfi_offset 24, -10
+ 1820 07f6 9F93      		push r25
+ 1821               	.LCFI54:
+ 1822               		.cfi_def_cfa_offset 12
+ 1823               		.cfi_offset 25, -11
+ 1824 07f8 AF93      		push r26
+ 1825               	.LCFI55:
+ 1826               		.cfi_def_cfa_offset 13
+ 1827               		.cfi_offset 26, -12
+ 1828 07fa BF93      		push r27
+ 1829               	.LCFI56:
+ 1830               		.cfi_def_cfa_offset 14
+ 1831               		.cfi_offset 27, -13
+ 1832 07fc EF93      		push r30
+ 1833               	.LCFI57:
+ 1834               		.cfi_def_cfa_offset 15
+ 1835               		.cfi_offset 30, -14
+ 1836 07fe FF93      		push r31
+ 1837               	.LCFI58:
+ 1838               		.cfi_def_cfa_offset 16
+ 1839               		.cfi_offset 31, -15
+ 1840               	/* prologue: Signal */
+ 1841               	/* frame size = 0 */
+ 1842               	/* stack size = 15 */
+ 1843               	.L__stack_usage = 15
+ 615:FatFs/mmc_avr.c **** 	//Timer++;			/* Performance counter for this module */
+ 616:FatFs/mmc_avr.c **** 	disk_timerproc();	/* Drive timer procedure of low level disk I/O module */
+ 1844               		.loc 1 616 0
+ 1845 0800 0E94 0000 		call disk_timerproc
+ 1846               	.LVL181:
+ 1847               	/* epilogue start */
+ 617:FatFs/mmc_avr.c **** }
+ 1848               		.loc 1 617 0
+ 1849 0804 FF91      		pop r31
+ 1850 0806 EF91      		pop r30
+ 1851 0808 BF91      		pop r27
+ 1852 080a AF91      		pop r26
+ 1853 080c 9F91      		pop r25
+ 1854 080e 8F91      		pop r24
+ 1855 0810 7F91      		pop r23
+ 1856 0812 6F91      		pop r22
+ 1857 0814 5F91      		pop r21
+ 1858 0816 4F91      		pop r20
+ 1859 0818 3F91      		pop r19
+ 1860 081a 2F91      		pop r18
+ 1861 081c 0F90      		pop r0
+ 1862 081e 0FBE      		out __SREG__,r0
+ 1863 0820 0F90      		pop r0
+ 1864 0822 1F90      		pop r1
+ 1865 0824 1895      		reti
+ 1866               		.cfi_endproc
+ 1867               	.LFE17:
+ 1869               		.local	CardType
+ 1870               		.comm	CardType,1,1
+ 1871               		.local	Timer2
+ 1872               		.comm	Timer2,1,1
+ 1873               		.local	Timer1
+ 1874               		.comm	Timer1,1,1
+ 1875               		.data
+ 1878               	Stat:
+ 1879 0000 01        		.byte	1
+ 1880               		.text
+ 1881               	.Letext0:
+ 1882               		.file 2 "/usr/lib/avr/include/stdint.h"
+ 1883               		.file 3 "FatFs/ff.h"
+ 1884               		.file 4 "FatFs/diskio.h"
+DEFINED SYMBOLS
+                            *ABS*:0000000000000000 mmc_avr.c
+     /tmp/ccvEk7MJ.s:2      *ABS*:000000000000003e __SP_H__
+     /tmp/ccvEk7MJ.s:3      *ABS*:000000000000003d __SP_L__
+     /tmp/ccvEk7MJ.s:4      *ABS*:000000000000003f __SREG__
+     /tmp/ccvEk7MJ.s:5      *ABS*:0000000000000000 __tmp_reg__
+     /tmp/ccvEk7MJ.s:6      *ABS*:0000000000000001 __zero_reg__
+     /tmp/ccvEk7MJ.s:11     .text:0000000000000000 power_off
+     /tmp/ccvEk7MJ.s:33     .text:000000000000000c xchg_spi
+     /tmp/ccvEk7MJ.s:57     .text:0000000000000016 deselect
+     /tmp/ccvEk7MJ.s:75     .text:000000000000001e rcvr_datablock
+     /tmp/ccvEk7MJ.s:1872   .bss:0000000000000002 Timer1
+     /tmp/ccvEk7MJ.s:192    .text:0000000000000088 wait_ready.constprop.2
+     /tmp/ccvEk7MJ.s:1870   .bss:0000000000000001 Timer2
+     /tmp/ccvEk7MJ.s:232    .text:00000000000000b0 select
+     /tmp/ccvEk7MJ.s:280    .text:00000000000000d8 send_cmd
+     /tmp/ccvEk7MJ.s:435    .text:0000000000000176 xmit_datablock
+     /tmp/ccvEk7MJ.s:547    .text:00000000000001e4 disk_initialize
+     /tmp/ccvEk7MJ.s:1878   .data:0000000000000000 Stat
+                             .bss:0000000000000000 CardType
+     /tmp/ccvEk7MJ.s:877    .text:0000000000000388 disk_status
+     /tmp/ccvEk7MJ.s:905    .text:0000000000000396 disk_read
+     /tmp/ccvEk7MJ.s:1045   .text:000000000000042c disk_write
+     /tmp/ccvEk7MJ.s:1245   .text:000000000000050e disk_ioctl
+     /tmp/ccvEk7MJ.s:1733   .text:00000000000007b6 disk_timerproc
+     /tmp/ccvEk7MJ.s:1777   .text:00000000000007de __vector_4
+
+UNDEFINED SYMBOLS
+__tablejump2__
+__do_copy_data
+__do_clear_bss
